@@ -73,7 +73,20 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 2 | Controllers — Cats CRUD | 완료 | `508c28b` |
 | 3 | Providers — CatsService | 완료 | |
 | 4 | Modules — CatsModule | 완료 | |
-| 5 | Middleware | 진행 중 | |
+| 5 | Middleware — LoggerMiddleware | 완료 | |
+| 6 | Exception filters | 미시작 | |
+
+### Step 5 에서 익힌 것
+
+- middleware 는 **요청 생명주기의 가장 바깥** — 라우팅 확정 전이라 어떤 핸들러인지 모른다.
+- 등록은 `providers` 가 아니라 **`AppModule.configure(consumer)`** — `implements NestModule` 필요.
+  지금까지 비어있던 module 클래스 본문에 처음으로 코드가 들어간 사례.
+- `forRoutes('*' | 'cats' | CatsController | {path, method})` / `exclude(...)` 로 범위 지정.
+- **`next()` 를 부르지 않으면 요청이 멈춘다** — 응답도 로그도 없이 타임아웃.
+- `res.statusCode` 는 요청 시점엔 기본값이다. **`res.on('finish')`** 에서 읽어야 실제 응답 코드를 얻는다
+  (로그의 `304` 가 그 증거).
+- `nest g middleware logger common/middleware` 는 `common/middleware/logger/` 로 **폴더를 한 겹 더** 만든다.
+  `--flat` 을 쓰거나 생성 후 옮긴다.
 
 ### Step 2~4 에서 익힌 것
 
