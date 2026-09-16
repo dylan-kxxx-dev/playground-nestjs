@@ -68,4 +68,29 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 
 | # | 주제 | 상태 | 커밋 |
 |---|------|------|------|
-| 1 | First steps | 미시작 | |
+| 1 | First steps — 스캐폴딩 | 완료 | `d7ff404` |
+| 1 | First steps — 코드 읽기 | 완료 | |
+| 2 | Controllers — Cats CRUD | 진행 중 | |
+
+### Step 1 에서 익힌 것
+
+- `??` vs `||` — nullish(2개) vs falsy(6개: `false 0 "" null undefined NaN`)
+- decorator = **함수**. `@Module({...})` 는 `Module({...})(AppModule)` 2회 호출
+  (factory 가 설정을 받아 decorator 를 반환 → 그것이 클래스를 인자로 받음)
+- decorator 는 클래스를 **바꾸지 않고** 메타데이터만 붙인다 → `class AppModule {}` 가 비어도 되는 이유
+- TS 타입은 컴파일되면 소멸 → `emitDecoratorMetadata` 가 `design:paramtypes` 로 남김
+  → `reflect-metadata` 가 저장/조회 → NestJS 가 읽어 DI 수행 (`dist/app.controller.js` 에서 확인 가능)
+- `private readonly x` = 필드 자동생성 + 은닉 + 재할당 금지 (parameter property)
+- `imports` = 모듈 단위 / `controllers`·`providers` = 부품 단위 → 단위테스트 vs E2E 차이
+- NestJS 는 **class 필수** — decorator·DI 타입추론이 class 에만 동작
+
+## 확정된 환경 (2026-09-16 실측)
+
+| 항목 | 버전 |
+|---|---|
+| NestJS | 12.0.1 |
+| TypeScript | **6.0.3** — 검색 시 TS 5 기준 답변과 다를 수 있음 |
+| Node | 24.14.1 |
+| 테스트 | Jest 30 |
+| 린트 | **oxlint** 1.83 — CJS인데도 oxlint (문서는 ESM만이라 했으나 실물이 기준) |
+| HTTP | Express 5 (내부) |
