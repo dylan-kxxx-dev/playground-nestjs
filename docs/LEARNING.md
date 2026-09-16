@@ -72,7 +72,23 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 1 | First steps — 코드 읽기 | 완료 | |
 | 2 | Controllers — Cats CRUD | 완료 | `508c28b` |
 | 3 | Providers — CatsService | 완료 | |
-| 4 | Modules — CatsModule | 진행 중 | |
+| 4 | Modules — CatsModule | 완료 | |
+| 5 | Middleware | 진행 중 | |
+
+### Step 2~4 에서 익힌 것
+
+- **CLI 가 표준** — `nest g <종류> <이름>`. 이름이 곧 경로(`animals/dogs` 가능, `--flat` 로 폴더 생략).
+  손으로 만들면 **module 등록 누락**이 잦고, 그 증상이 404 라 원인이 안 보인다.
+- **DTO 는 class, 내부 타입은 interface** — 경계는 "외부에서 들어오는가".
+  외부 입력은 런타임 검증이 필요 → decorator 부착 필요 → class 여야 한다.
+  interface 에 decorator 는 **문법 에러**(TS1131), 사라지는 게 아니라 애초에 못 붙인다.
+- **decorator 는 검사하지 않는다** — `@IsString()` 이 붙어도 그냥 대입된다(실측).
+  `validateSync()` / `ValidationPipe` 가 **읽고 실행**해야 걸린다. 모든 decorator 가 동일 — 메모일 뿐.
+- **모듈은 캡슐** — `imports` 는 "연결", `exports` 는 "공개 품목". 양쪽 다 있어야 주입된다.
+  `imports: [CatsModule]` 은 **모듈 이름 하나**만 적지만, 그 클래스를 따라가 `exports` 메모를 읽는다.
+  → 공개 범위 결정권이 **주는 쪽**에 있다.
+- **파일 import ≠ `imports:`** — 전자는 TS 문법(타입 알기), 후자는 DI 범위. 파일 import 만으론 주입 안 된다.
+- provider 는 기본 **singleton** — 모듈이 달라도 같은 인스턴스 공유 (`/cats` 로 넣은 걸 `/cat-count` 가 봄)
 
 ### 미결 사항 (나중 단계에서 처리)
 
