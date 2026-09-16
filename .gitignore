@@ -1,0 +1,34 @@
+# dependencies
+node_modules/
+
+# build
+dist/
+build/
+*.tsbuildinfo
+
+# env
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# test / coverage
+coverage/
+.nyc_output/
+
+# editor / OS
+.DS_Store
+.idea/
+*.swp
+
+# codegraph index
+.codegraph/
+
+# claude local state
+.claude/state/
