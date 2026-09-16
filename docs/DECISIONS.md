@@ -12,7 +12,7 @@
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [0001](adr/0001-example.md) | Example decision | Proposed |
+| [0001](adr/0001-commonjs-first-then-esm.md) | CommonJS로 학습 후 ESM 전환 | Accepted |
 
 ## Session-temporary decisions (not yet promoted)
 
@@ -22,8 +22,3 @@ When one becomes a durable decision, write it as an ADR in docs/adr/ and add a
 row to the ADR Index above, then remove it from here.
 -->
 
-## YYYY-MM-DD — Example temporary decision
-
-**Decision**: ...  
-**Reason**: ...  
-**Promote to ADR when**: Condition under which this becomes a durable decision.
