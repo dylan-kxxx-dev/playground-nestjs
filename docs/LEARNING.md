@@ -71,9 +71,22 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 1 | First steps — 스캐폴딩 | 완료 | `d7ff404` |
 | 1 | First steps — 코드 읽기 | 완료 | |
 | 2 | Controllers — Cats CRUD | 완료 | `508c28b` |
-| 3 | Providers — CatsService | 진행 중 | |
+| 3 | Providers — CatsService | 완료 | |
+| 4 | Modules — CatsModule | 진행 중 | |
 
 ### 미결 사항 (나중 단계에서 처리)
+
+**CRUD 동작 후 실측한 잘못된 응답 (2026-09-16)**
+
+| 상황 | 현재 | 올바른 응답 | 해결 단계 |
+|---|---|---|---|
+| 없는 id 조회/수정 | 200 + 빈 본문 | 404 | Exception filters (6) |
+| 없는 id 삭제 | 200 + `false` | 404 / 204 | Exception filters (6) |
+| `/cats/abc` | 200 + 빈 본문 (`Number('abc')`=NaN) | 400 | Pipes (7) — `ParseIntPipe` |
+| 타입 위반 생성 | 201 + 그대로 저장 | 400 | Pipes/Validation (7,10) — `ValidationPipe` |
+
+> `undefined` 반환 → NestJS 가 200 + 빈 본문으로 처리한다.
+> "성공했으나 데이터 없음" 과 "리소스 없음" 이 구분되지 않는다.
 
 - **DTO 런타임 검증 없음** — `CreateCatDto` 는 타입만 제공. 실측 확인:
   `{"name":12345,"age":"숫자아님","breed":null}` 이 그대로 통과한다.
