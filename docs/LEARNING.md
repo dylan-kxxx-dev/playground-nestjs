@@ -70,7 +70,15 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 |---|------|------|------|
 | 1 | First steps — 스캐폴딩 | 완료 | `d7ff404` |
 | 1 | First steps — 코드 읽기 | 완료 | |
-| 2 | Controllers — Cats CRUD | 진행 중 | |
+| 2 | Controllers — Cats CRUD | 완료 | `508c28b` |
+| 3 | Providers — CatsService | 진행 중 | |
+
+### 미결 사항 (나중 단계에서 처리)
+
+- **DTO 런타임 검증 없음** — `CreateCatDto` 는 타입만 제공. 실측 확인:
+  `{"name":12345,"age":"숫자아님","breed":null}` 이 그대로 통과한다.
+  → Pipes(7)/Validation(10) 단계에서 `class-validator` + `ValidationPipe` 로 해결.
+  DTO 를 interface 가 아닌 **class** 로 만든 이유가 이것 (decorator 부착 가능).
 
 ### Step 1 에서 익힌 것
 
