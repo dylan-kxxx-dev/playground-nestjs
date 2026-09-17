@@ -74,7 +74,88 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 3 | Providers — CatsService | 완료 | |
 | 4 | Modules — CatsModule | 완료 | |
 | 5 | Middleware — LoggerMiddleware | 완료 | |
-| 6 | Exception filters | 완료 | |
+| 6 | Exception filters | 완료 | `672295e` |
+| 7 | Pipes — ParseIntPipe / ValidationPipe | 완료 | |
+
+### Step 7 에서 익힌 것
+
+- **pipe 는 핸들러 직전**에 끼어든다. 던지면 **핸들러가 아예 실행되지 않는다.**
+- pipe 가 하는 일은 둘 — **변환**(`'1'` → `1`)과 **검증**. `ParseIntPipe` 를 붙이니
+  controller 의 `Number(id)` 3개가 사라졌다(변환을 pipe 가 가져감).
+- `@Param('id', ParseIntPipe)` — **두 번째 인자**로 넘긴다. 파라미터 타입도 `string` → `number` 로.
+- **pipe 가 던진 예외를 6단계 필터가 잡는다** — `/cats/abc` 의 400 응답에 `timestamp`·`path` 가
+  실렸다. `BadRequestException` 도 `HttpException` 의 자식이라 `@Catch(HttpException)` 에 걸린다.
+  → **요청 생명주기가 이어져 있다는 실측 증거.**
+- `/cats/abc` 가 404 였던 게 왜 틀렸나 — **"없다"가 아니라 "잘못 물었다"**. `abc` 는 애초에
+  id 가 될 수 없는 값이라 400 이 맞다. 이제 `/cats/abc`(400)와 `/cats/999`(404)가 갈린다.
+
+**검증 3조각이 다 있어야 막힌다**
+
+```
+1. class          ← decorator 를 붙일 수 있는 형태      (이미 있었음)
+2. @IsString()    ← "검사해야 할 것" 이라는 메모        (7단계에서 추가)
+3. ValidationPipe ← 그 메모를 런타임에 읽고 실행         (7단계에서 추가)
+```
+
+3단계에서 `@IsString()` 이 안 먹었던 이유가 3번 부재였다. 패키지(`class-validator`)는
+`nest new` 가 처음부터 넣어줬다 — **있었고 읽는 사람만 없었다.**
+
+- `main.ts` 에서 **`useGlobalPipes` 는 `listen` 앞**이어야 한다. `await app.listen()` 뒤에
+  등록하면 서버가 이미 뜬 뒤라 **조용히 무시된다**(400 이 안 나오고 201 통과 — 실제로 밟음).
+
+**`?:` 는 런타임에 없다 — 가장 선명한 컴파일/런타임 사례**
+
+`UpdateCatDto` 의 `name?: string` 에 `@IsOptional()` 을 안 붙였더니
+`{"age":5}` 만 보낸 PATCH 가 **400** 이 됐다(`name must be a string`).
+
+`?` 는 TypeScript 문법이라 컴파일 후 소멸 → `class-validator` 는 그 정보를 볼 방법이 없다.
+**런타임 쪽에도 "없어도 된다"를 따로 알려줘야 한다** = `@IsOptional()`.
+그리고 `@IsOptional()` 은 "검사 면제"가 아니라 **"없을 때만 면제"** 다 —
+`{"age":"다섯"}` 은 여전히 400(실측).
+
+**`whitelist: true` — 보안 구멍을 막고 다른 걸 깨뜨렸다**
+
+DTO 에 없는 필드는 기본 `ValidationPipe` 가 **통과시킨다**(실측: `evil` 이 201).
+`create` 는 필드를 하나씩 골라 담아서 우연히 안전했고, `update` 는 스프레드라 **실제로 저장됐다**
+(`{"id":1,...,"evil":"payload"}`). → mass assignment. 같은 DTO 인데 **안전 여부가
+서비스 구현에 달린** 상태였다.
+
+`whitelist: true` 로 막았더니 이번엔 **`name`·`breed` 가 사라졌다**:
+
+```
+{"age":7} → dto = { name: undefined, age: 7, breed: undefined }
+         → { ...기존, ...dto } 에서 undefined 가 기존 값을 덮음
+         → JSON 출력에서 undefined 는 키째 빠짐 → "사라진 것처럼" 보임
+```
+
+**응답만 보면 못 찾는다.** `console.log(dto)` 로 직접 본 게 답이었다.
+`undefined` 와 `null` 의 차이도 여기서 — `null` 은 `{"b":null}` 로 남고 `undefined` 는 빠진다.
+
+**PUT → PATCH 로 바꾼 이유**
+
+| | 의미 | 빠진 필드 |
+|---|---|---|
+| PUT | 전체 교체 | **지워진다** (안 보냈으니 없는 것) |
+| PATCH | 부분 수정 | **유지된다** (언급 안 했을 뿐) |
+
+즉 `{"id":1,"age":9}` 가 나왔던 건 **사실 PUT 의 정의에 맞는 동작**이었다 —
+우리가 원한 게 부분 수정이었을 뿐. "일부만 바꾸는 API 를 PUT 으로 만들고 DTO 를 optional 로
+두는 것"이 흔한 오용이고 이 코드가 그 상태였다.
+
+PATCH 가 보편적인 근거: `nest g resource` 기본 코드 · 공식 문서 Cats 예제 · GitHub/Stripe API.
+PUT 은 전체 교체가 진짜 의도일 때(설정 통째 저장 등). 부수적으로 **PUT 은 멱등 보장, PATCH 는 아님**
+(현 구현은 값을 직접 지정하니 실제로는 멱등 — 규약상 보장이 없을 뿐).
+
+**`filter` 는 원본을 안 바꾼다**
+
+```ts
+Object.entries(dto).filter(([, v]) => v !== undefined);   // ❌ 결과를 안 쓰면 아무 효과 없음
+const changes = Object.fromEntries(Object.entries(dto).filter(([, v]) => v !== undefined));
+```
+
+`filter`·`map`·`slice` 는 **새 걸 만들어 반환**하고 원본은 그대로.
+`splice`·`push` 는 원본을 바꾼다. 어느 쪽인지 헷갈리면 **반환값을 안 쓰는 죽은 줄**이 생긴다.
+`([, v])` 의 앞 빈칸은 첫 번째(키)를 안 쓴다는 표시.
 
 ### Step 6 에서 익힌 것
 
@@ -184,8 +265,8 @@ C 가 확장성은 낫지만 **지금 도입하면 비용만 낸다.** C 가 값
 |---|---|---|---|
 | ~~없는 id 조회/수정~~ | ~~200 + 빈 본문~~ | 404 | ✅ 해결 (6) |
 | ~~없는 id 삭제~~ | ~~200 + `false`~~ | 404 | ✅ 해결 (6) — 성공 시 200 + 삭제된 객체 |
-| `/cats/abc` | 200 + 빈 본문 (`Number('abc')`=NaN) | 400 | Pipes (7) — `ParseIntPipe` |
-| 타입 위반 생성 | 201 + 그대로 저장 | 400 | Pipes/Validation (7,10) — `ValidationPipe` |
+| ~~`/cats/abc`~~ | ~~200 + 빈 본문~~ | 400 | ✅ 해결 (7) — `ParseIntPipe` |
+| ~~타입 위반 생성~~ | ~~201 + 그대로 저장~~ | 400 | ✅ 해결 (7) — `ValidationPipe` |
 
 > `undefined` 반환 → NestJS 가 200 + 빈 본문으로 처리한다.
 > "성공했으나 데이터 없음" 과 "리소스 없음" 이 구분되지 않는다.
@@ -210,10 +291,12 @@ Jest 가 `require` 로 로드하려다 실패. **코드 문제가 아니라 환�
 파고들면 NestJS 가 아니라 툴링 학습이 된다. 실제로 테스트를 쓸 단계나
 **ESM 전환(Phase 3)에서 저절로 사라질 가능성**도 있다.
 
-- **DTO 런타임 검증 없음** — `CreateCatDto` 는 타입만 제공. 실측 확인:
-  `{"name":12345,"age":"숫자아님","breed":null}` 이 그대로 통과한다.
-  → Pipes(7)/Validation(10) 단계에서 `class-validator` + `ValidationPipe` 로 해결.
-  DTO 를 interface 가 아닌 **class** 로 만든 이유가 이것 (decorator 부착 가능).
+- ~~**DTO 런타임 검증 없음**~~ → ✅ 해결 (7) — `class-validator` + `ValidationPipe({ whitelist: true })`.
+  `dist/cats/dto/create-cat.dto.js` 를 7단계 전후로 비교하면 `__decorate`·`__metadata` 가 생긴 것을 볼 수 있다.
+
+**남은 미결 (Phase 1 기준 없음)** — 위 4건은 6·7단계에서 모두 해결됐다.
+학습용으로 새로 인지한 것: `forbidNonWhitelisted` 를 안 켰으므로 DTO 에 없는 필드는
+**조용히 제거**된다(400 이 아님). 클라이언트가 오타를 알아채지 못하는 트레이드오프 — 의도적 선택.
 
 ### Step 1 에서 익힌 것
 

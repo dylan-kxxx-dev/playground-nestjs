@@ -13,7 +13,7 @@ export class CatsService {
             id: this.nextId++,
             name: dto.name,
             age: dto.age,
-            breed: dto.breed
+            breed: dto.breed,
         };
         this.cats.push(cat);
         return cat;
@@ -24,20 +24,23 @@ export class CatsService {
     }
 
     findOne(id: number): Cat | undefined {
-        return this.cats.find(cat => cat.id === id);
+        return this.cats.find((cat) => cat.id === id);
     }
 
     update(id: number, dto: UpdateCatDto): Cat | undefined {
-        const catIndex = this.cats.findIndex(cat => cat.id === id);
+        const catIndex = this.cats.findIndex((cat) => cat.id === id);
         if (catIndex === -1) {
             return undefined;
         }
-        this.cats[catIndex] = { ...this.cats[catIndex], ...dto };
+        const changes = Object.fromEntries(
+            Object.entries(dto).filter(([, v]) => v !== undefined),
+        );
+        this.cats[catIndex] = { ...this.cats[catIndex], ...changes };
         return this.cats[catIndex];
     }
 
     remove(id: number): Cat | undefined {
-        const catIndex = this.cats.findIndex(cat => cat.id === id);
+        const catIndex = this.cats.findIndex((cat) => cat.id === id);
         if (catIndex === -1) {
             return undefined;
         }
