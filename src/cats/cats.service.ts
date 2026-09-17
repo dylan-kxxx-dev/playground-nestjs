@@ -36,12 +36,11 @@ export class CatsService {
         return this.cats[catIndex];
     }
 
-    remove(id: number): boolean {
+    remove(id: number): Cat | undefined {
         const catIndex = this.cats.findIndex(cat => cat.id === id);
         if (catIndex === -1) {
-            return false;
+            return undefined;
         }
-        this.cats.splice(catIndex, 1);
-        return true;
+        return this.cats.splice(catIndex, 1)[0];
     }
 }

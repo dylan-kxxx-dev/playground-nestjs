@@ -74,7 +74,80 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 3 | Providers — CatsService | 완료 | |
 | 4 | Modules — CatsModule | 완료 | |
 | 5 | Middleware — LoggerMiddleware | 완료 | |
-| 6 | Exception filters | 미시작 | |
+| 6 | Exception filters | 완료 | |
+
+### Step 6 에서 익힌 것
+
+- **필터는 이미 돌고 있었다.** 없는 라우트가 404 JSON 을 주던 것이 내장 전역 필터다.
+  새로 켜는 게 아니라 **이미 있는 것에 말을 거는 단계**였다.
+- 내장 필터의 규칙은 하나 — `HttpException` 과 그 자식이면 그 객체의 status,
+  **그 외 아무거나면 500**. `NotFoundException` 이 404 가 되는 건 필터를 만들어서가 아니라
+  **필터가 알아보는 형태로 던졌기 때문**.
+- **필터는 던져진 것만 본다. 반환값은 안 본다.** `return undefined` 가 200 이었던 이유 —
+  실패라는 신호를 아무에게도 안 보낸 것.
+- `@HttpCode(n)` 은 **성공 응답에만** 적용된다. 예외를 던지면 경로가 갈려서 예외의 status 가 이긴다
+  (`@HttpCode(204)` 가 붙은 `remove` 에서 404 가 정상적으로 나온 것으로 확인).
+  기본값: `@Post` 는 201, 나머지는 200.
+- **`@HttpCode(204)` + `return x` 는 모순** — 204 는 본문 금지라 `return` 이 효과가 없다.
+  코드에는 있고 동작에는 없는 줄이 생긴다.
+- `find` 는 못 찾으면 `undefined`, **`findIndex` 는 `-1`**. `0` 이 유효한 인덱스라서
+  falsy 검사(`!catIndex`)를 쓰면 첫 번째 요소에서 틀린다. `splice(-1, 1)` 은 **마지막 요소를 지운다** —
+  조용히 틀리는 종류.
+- **커스텀 필터가 하는 일은 "응답을 직접 쓰는 것"** — `catch` 본문이 비면 요청이 멈춘다
+  (5단계에서 `next()` 를 안 불렀을 때와 같은 증상).
+- `ArgumentsHost` 는 **프로토콜이 아직 안 정해진 컨텍스트**. `switchToHttp()`/`switchToWs()`/
+  `switchToRpc()` 가 그 선택이다. HTTP 하나만 쓰면 추상화가 비용처럼 보이는 게 맞다.
+- `response.status().json()` 은 **Express API** 지 NestJS 가 아니다. 그래서 이 필터는
+  Express 에 종속된다(Fastify 로 바꾸면 깨짐). 중립으로 쓰려면 `HttpAdapterHost`.
+- `ctx.getResponse()` 는 제네릭 없이 부르면 **`any`** — 오타도 통과한다.
+  `getResponse<Response>()` 로 `express` 타입을 넣어야 검사된다.
+
+**제네릭 — 선언 자리와 사용 자리가 반대다**
+
+```ts
+class Box<T> { }          // 선언 — 이름을 "만든다"
+new Box<string>('hi')     // 사용 — 실제 타입을 "넣는다"
+```
+
+`function f(x)` 와 `f(10)` 의 관계와 같다. `<>` 안이라고 같은 게 아니다.
+
+- **`class Filter<HttpException>` 은 import 한 클래스를 가리키지 않는다.** 선언 자리라서
+  `T` 를 `HttpException` 이라고 **이름만 바꾼 것**이다(섀도잉). 그래서 `getStatus()` 가 없었다.
+  `class Box<string> {}` 은 아예 문법 에러 — 선언 자리엔 이름이 와야 한다.
+- 빈 칸이면 **아무 메서드도 못 쓴다.** 틀렸다고 잡은 게 아니라 **맞다고 말할 근거가 없는 것**.
+- 섀도잉은 **이름이 겹치는 것 하나만** 가린다. 같은 줄의 `host: ArgumentsHost` 는 멀쩡했다.
+- **필터에 제네릭은 무의미하다** — 제네릭 인자는 *호출하는 줄*에 쓰는데,
+  `filter.catch(...)` 를 부르는 건 Nest 내부지 내 코드가 아니다. 채울 자리가 없다.
+  `@UseFilters(HttpExceptionFilter)` 는 클래스 이름만 넘긴다.
+  → **DI 와 같은 구조**: 내가 `new` 를 안 하면 생성자 인자를 못 넣고,
+    내가 `catch` 를 안 부르면 제네릭을 못 넣는다. **누가 부르느냐가 무엇을 정할 수 있느냐를 결정한다.**
+
+**던지는 위치 — controller 를 골랐다**
+
+| 방식 | 던지는 곳 | 특징 |
+|---|---|---|
+| A (채택) | controller | service 가 HTTP 를 모름. 대신 controller 마다 중복 |
+| B | service | 중복 1곳. 대신 service 가 HTTP 에 묶임. 공식 문서·실무 다수 |
+| C | service(도메인 예외) → 필터가 번역 | 둘 다 해결. 계층 하나 증가 |
+
+C 가 확장성은 낫지만 **지금 도입하면 비용만 낸다.** C 가 값을 하는 조건은
+*같은 service 를 HTTP 아닌 곳(CLI·큐·gRPC)에서도 부를 때*인데, 지금 진입점은 HTTP 하나다.
+나중에 C 로 가는 비용이 지금 C 로 시작하는 비용과 **거의 같아서**, 미루는 게 이득이다.
+
+**`boolean` 반환을 걷어낸 이유 (code smell)**
+
+`remove` 가 `boolean` 이었을 때 세 가지가 겹쳐 있었다 — 있었나 없었나(정보) / 성공인가(제어) /
+`splice` 가 돌려준 객체를 감춤(손실). `Cat | undefined` 로 바꾸니 셋 다 풀리고
+`findOne`·`update` 와 **시그니처가 통일**됐다(controller 검사도 `=== undefined` 하나로).
+`false` 는 "왜 실패했는지"를 담을 자리가 없어서, 호출자가 **임의로 해석**하게 된다
+(권한 문제였어도 404 로 나감).
+
+**DELETE 응답으로 목록을 주지 않은 이유**
+
+목록 갱신은 3가지 길이 있고(응답으로 받기 / 재조회 / 로컬 상태에서 제거),
+**로컬 제거도 1왕복**이라 "응답으로 목록"만의 장점이 아니다. 필터·페이지가 붙으면
+서버는 *클라이언트가 지금 어떤 뷰를 보는지 모른다*. 엔드포인트는 여러 화면이 공유하므로
+한 화면의 편의를 API 성질로 굳히면 다른 호출자가 그 비용을 낸다. → 200 + 삭제된 객체.
 
 ### Step 5 에서 익힌 것
 
@@ -109,13 +182,33 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 
 | 상황 | 현재 | 올바른 응답 | 해결 단계 |
 |---|---|---|---|
-| 없는 id 조회/수정 | 200 + 빈 본문 | 404 | Exception filters (6) |
-| 없는 id 삭제 | 200 + `false` | 404 / 204 | Exception filters (6) |
+| ~~없는 id 조회/수정~~ | ~~200 + 빈 본문~~ | 404 | ✅ 해결 (6) |
+| ~~없는 id 삭제~~ | ~~200 + `false`~~ | 404 | ✅ 해결 (6) — 성공 시 200 + 삭제된 객체 |
 | `/cats/abc` | 200 + 빈 본문 (`Number('abc')`=NaN) | 400 | Pipes (7) — `ParseIntPipe` |
 | 타입 위반 생성 | 201 + 그대로 저장 | 400 | Pipes/Validation (7,10) — `ValidationPipe` |
 
 > `undefined` 반환 → NestJS 가 200 + 빈 본문으로 처리한다.
 > "성공했으나 데이터 없음" 과 "리소스 없음" 이 구분되지 않는다.
+
+**Jest 테스트가 전부 실패한다 (2026-09-17, 미루기로 결정)**
+
+스펙 5개 전부 1줄 `import { Test } from '@nestjs/testing'` 에서 죽는다.
+
+```
+Must use import to load ES Module: .../@nestjs/testing/index.js
+The file contains ESM syntax (import/export) that could not be executed as CommonJS.
+```
+
+`@nestjs/testing` 12.0.2 가 **ESM 전용**인데 이 프로젝트가 CommonJS 라
+Jest 가 `require` 로 로드하려다 실패. **코드 문제가 아니라 환경 문제**다.
+
+- `pnpm build` 는 rc=0 으로 통과한다 — `nest build` 는 `src` 전체를 한 번에 컴파일하므로 무관.
+- 먼저 `tsconfig.json` 에 **`rootDir: "./src"`** 를 추가해 TS5011 을 걷었고(TS 6.0 에서 에러로 승격된 것으로 보임 — 릴리스 노트 미확인), 그 뒤에 이 ESM 벽이 드러났다.
+- 에러가 제시한 길 3가지: `transformIgnorePatterns` 조정 / babel-jest transform / **Node v24.9+ 의 `require(esm)` 네이티브 지원**(로컬 Node 24.14.1 이라 조건은 이미 충족 — Jest 30 에서 추가 설정이 필요한지 **미확인**).
+
+**미루는 이유**: 현재 스펙 파일은 CLI 가 만든 빈 껍데기라 고쳐도 검증하는 게 없고,
+파고들면 NestJS 가 아니라 툴링 학습이 된다. 실제로 테스트를 쓸 단계나
+**ESM 전환(Phase 3)에서 저절로 사라질 가능성**도 있다.
 
 - **DTO 런타임 검증 없음** — `CreateCatDto` 는 타입만 제공. 실측 확인:
   `{"name":12345,"age":"숫자아님","breed":null}` 이 그대로 통과한다.

@@ -1,8 +1,10 @@
-import { Body, Param, Controller, Delete, Get, Post, Put } from '@nestjs/common';
+import { Body, Param, Controller, Delete, Get, Post, Put, NotFoundException, UseFilters } from '@nestjs/common';
 import { UpdateCatDto } from './dto/update-cat.dto';
 import { CreateCatDto } from './dto/create-cat.dto';
 import { CatsService } from './cats.service';
+import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
 
+@UseFilters(HttpExceptionFilter)
 @Controller('cats')
 export class CatsController {
     constructor(private readonly catsService: CatsService) {}
@@ -13,11 +15,19 @@ export class CatsController {
     }
     @Get(':id')
     findOne(@Param('id') id: string) {
-        return this.catsService.findOne(Number(id));
+        const result = this.catsService.findOne(Number(id));
+        if (result === undefined) {
+            throw new NotFoundException(`Cat with id ${id} not found`);
+        }
+        return result;
     }
     @Put(':id')
     update(@Param('id') id: string, @Body() updateCatDto: UpdateCatDto) {
-        return this.catsService.update(Number(id), updateCatDto);
+        const result = this.catsService.update(Number(id), updateCatDto);
+        if (result === undefined) {
+            throw new NotFoundException(`Cat with id ${id} not found`);
+        }
+        return result;
     }
     @Post()
     create(@Body() createCatDto: CreateCatDto) {
@@ -25,6 +35,10 @@ export class CatsController {
     }
     @Delete(':id')
     remove(@Param('id') id: string) {
-        return this.catsService.remove(Number(id));
+        const result = this.catsService.remove(Number(id));
+        if (result === undefined) {
+            throw new NotFoundException(`Cat with id ${id} not found`);
+        }
+        return result;
     }
 }
