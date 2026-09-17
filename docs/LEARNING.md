@@ -39,6 +39,29 @@
 
 > Phase 2 진입 시점에 ORM(TypeORM / Prisma / Drizzle)을 정한다 — ADR 대상.
 
+### Phase 1.5 — 불편했던 것 되짚기 (Phase 2 진입 전)
+
+**ESM 전환 방식을 정하기 전에 먼저 한다.** 튜토리얼대로 따라오면서 불편했던 자리를
+모아, NestJS 에 이미 있는 기능으로 풀리는지 확인한다. 튜토리얼은 개념 하나씩 보여주느라
+**실무에서 쓰는 편의 기능을 대부분 생략**하므로, 직접 겪은 불편이 곧 그 기능을 찾는 단서다.
+
+지금까지 쌓인 후보 (7단계 시점):
+
+| 불편했던 것 | 확인해볼 방향 |
+|---|---|
+| `@Param('id', ParseIntPipe)` 가 3곳 반복 | 전역 pipe 설정 / `@Controller` 레벨 적용 |
+| 404 `throw` 3줄이 3곳 반복 | service 로 옮기기 / 도메인 예외 + 변환 필터(C안) |
+| DTO 두 개가 필드만 다르고 거의 동일 | `PartialType` 등 mapped types (`@nestjs/mapped-types`) |
+| `class-validator` 에러 메시지가 영어 고정 | decorator 의 message 옵션 / i18n |
+| 응답 형식을 필터에서 손으로 조립 | interceptor(9)로 성공 응답까지 일관되게 |
+| 서버 재시작마다 데이터 소멸 | Phase 2 Database — 지금은 정상 |
+| `pnpm lint` 가 깨져 있음 | package.json 스크립트 점검 |
+| `getRequest()` 제네릭을 매번 손으로 | 커스텀 decorator (`@Req()` 래핑 등) |
+| Jest 가 ESM 충돌로 안 돎 | Phase 3 에서 저절로 풀릴 수도 |
+
+> 8·9 단계를 하면서 **불편한 자리를 이 표에 계속 추가**한다. 목적은 "기능 구경"이 아니라
+> **겪은 불편 → 해결책** 순서를 지키는 것 — 반대로 하면 왜 필요한지 모르는 채로 쓰게 된다.
+
 ### Phase 3 — ESM 전환
 
 Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 시스템 차이를 익힌다.
@@ -75,7 +98,96 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 4 | Modules — CatsModule | 완료 | |
 | 5 | Middleware — LoggerMiddleware | 완료 | |
 | 6 | Exception filters | 완료 | `672295e` |
-| 7 | Pipes — ParseIntPipe / ValidationPipe | 완료 | |
+| 7 | Pipes — ParseIntPipe / ValidationPipe | 완료 | `52cdc68` |
+| 8 | Guards — AuthGuard (A: 기본) | 진행중 | |
+
+### Step 8 에서 익힌 것 (A 까지 — B 는 다음 세션)
+
+**생명주기에서의 위치**
+
+```
+요청 → middleware(5) → [라우팅] → GUARD(8) → interceptor(9) → pipe(7) → 핸들러
+```
+
+guard 는 **pipe 보다 앞**이다. "처리할 자격이 있나"를 먼저 묻고, 자격이 있어야 입력 검증이
+의미가 있다. 권한 없는 요청의 DTO 를 검증하는 건 낭비.
+
+**middleware 와의 진짜 차이 — 핸들러를 아는가**
+
+| | 아는 것 |
+|---|---|
+| middleware | 어떤 핸들러가 실행될지 **모른다** (라우팅 확정 전) |
+| guard | `ExecutionContext` 로 **핸들러를 안다** (`getHandler()`/`getClass()`) |
+
+- `ExecutionContext` 는 6단계의 `ArgumentsHost` 를 **상속**한다. `switchToHttp()` 는 그대로 쓰고
+  핸들러 정보를 아는 메서드가 추가된다.
+- **"middleware=인증, guard=인가"는 권고지 규칙이 아니다.** 공식 인증 챕터(`@nestjs/passport`)도
+  `AuthGuard` 로 **인증**을 한다. 정확한 구분은 *핸들러를 알아야 하는 판단이면 guard*.
+
+**`return false` vs `throw`**
+
+| | 결과 |
+|---|---|
+| `return false` | 403 `Forbidden resource` (Nest 가 `ForbiddenException` 을 던짐) |
+| `throw new UnauthorizedException(msg)` | **401** + 내 메시지 |
+
+"헤더가 없다"는 *너가 누군지 모르겠다* 라 401 이 맞다. 403 은 *인증은 됐는데 권한이 없다*.
+→ 실측: `{"statusCode":401,"message":"x-api-key header required"}` + **`timestamp`·`path` 있음**
+= guard 가 던진 예외를 6단계 필터가 잡았다. pipe(7)에 이어 **두 번째 연결 확인**.
+
+**타입이 거짓말을 하고 있던 자리**
+
+```ts
+canActivate(context: ExecutionContext): boolean {
+    return request.headers['x-api-key'];   // ❌ 실제로는 string | undefined
+}
+```
+
+`getRequest()` 가 제네릭 없이 `any` 라 검사가 꺼져 있었다(6단계 필터와 같은 함정).
+Nest 가 반환값을 truthy/falsy 로 보기 때문에 **동작은 우연히 맞았다.**
+`getRequest<Request>()` + `express` import 로 해결.
+
+> `Request` 를 `express` 에서 import 하지 않으면 **브라우저 표준 `Request`**(DOM 타입)가 잡힌다.
+> 그쪽 `.headers` 는 `Headers` 클래스라 `headers['x']` 인덱스 접근이 성립하지 않는다.
+> 이름이 같아서 조용히 어긋나는 종류.
+
+**라우팅이 guard 보다 먼저다 — `/abcdefg` 가 404 인 이유**
+
+부팅 시 라우트 표가 이미 만들어진다(`[RouterExplorer] Mapped {/cats, GET} route` 로그).
+요청이 오면 **표를 조회**하는 것이지 컨트롤러 코드를 실행해보는 게 아니다.
+
+| 요청 | 표 조회 | 결과 |
+|---|---|---|
+| `/cats` | `CatsController.findAll` 발견 | 그 컨트롤러의 guard·filter 적용 |
+| `/abcdefg` | **없음** | 404. 실행할 핸들러가 없으니 붙은 guard 도 없다 |
+
+`@UseGuards`·`@UseFilters` 는 **컨트롤러에 붙은 메타데이터**라, 그 컨트롤러가 선택돼야 읽힌다.
+→ 실측 증거: `/abcdefg` 응답에 **`timestamp` 가 없다**(내장 필터). 전역 guard(`APP_GUARD`)로
+바꿔도 이건 그대로 — 라우팅이 먼저라는 사실은 변하지 않는다.
+
+**guard 여러 개는 배열 순서대로** — `@UseGuards(AuthGuard, RolesGuard)`.
+인증이 `req.user` 를 붙인 뒤 인가가 그걸 읽어야 하므로 순서가 필수다.
+
+**⚠️ 이 AuthGuard 는 진짜 인증이 아니다**
+
+헤더 존재 여부만 본다. 헤더는 누구나 보낼 수 있으므로 **보안 기능이 아니라 guard 동작 확인용
+stub**이다. 실무 인증은 JWT 검증이나 세션이고 `@nestjs/passport` 소관(Phase 2 이후).
+시크릿을 코드에 박지 않으려고 값 비교를 일부러 넣지 않았다 — public 레포이기도 하다.
+
+**다음 세션: B — 메타데이터 + `Reflector`**
+
+핸들러마다 다른 규칙을 주는 것. **guard 만 할 수 있는 일**이고 `getHandler()` 를 실제로 쓴다.
+
+```ts
+export const Roles = Reflector.createDecorator<string[]>();   // 1. decorator 정의
+@Roles(['admin'])                                             // 2. 핸들러에 메모
+this.reflector.get(Roles, context.getHandler());              // 3. guard 가 읽음
+```
+
+`@SetMetadata('roles', [...])` 도 되지만 문자열 키라 오타가 안 잡힌다 — v12 는
+`Reflector.createDecorator` 를 권한다. 가짜 사용자는 `AuthGuard` 가 `req.user` 를 붙이는
+방식으로(실무 구조와 동일). **역할을 헤더로 받는 건 실서비스에선 금지** — 누구나
+`x-user-role: admin` 을 보낼 수 있다.
 
 ### Step 7 에서 익힌 것
 
