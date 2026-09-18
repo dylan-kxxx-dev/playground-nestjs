@@ -16,8 +16,10 @@ import { CreateCatDto } from './dto/create-cat.dto';
 import { CatsService } from './cats.service';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
 import { AuthGuard } from '../common/guards/auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, RolesGuard)
 @UseFilters(HttpExceptionFilter)
 @Controller('cats')
 export class CatsController {
@@ -50,6 +52,7 @@ export class CatsController {
     create(@Body() createCatDto: CreateCatDto) {
         return this.catsService.create(createCatDto);
     }
+    @Roles(['admin'])
     @Delete(':id')
     remove(@Param('id', ParseIntPipe) id: number) {
         const result = this.catsService.remove(id);

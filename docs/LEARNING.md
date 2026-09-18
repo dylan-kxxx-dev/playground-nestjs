@@ -99,9 +99,10 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 5 | Middleware — LoggerMiddleware | 완료 | |
 | 6 | Exception filters | 완료 | `672295e` |
 | 7 | Pipes — ParseIntPipe / ValidationPipe | 완료 | `52cdc68` |
-| 8 | Guards — AuthGuard (A: 기본) | 진행중 | |
+| 8 | Guards — AuthGuard (A: 기본) | 완료 | `41e72ad` |
+| 8 | Guards — @Roles + RolesGuard (B: 메타데이터) | 완료 | |
 
-### Step 8 에서 익힌 것 (A 까지 — B 는 다음 세션)
+### Step 8 에서 익힌 것
 
 **생명주기에서의 위치**
 
@@ -188,6 +189,118 @@ this.reflector.get(Roles, context.getHandler());              // 3. guard 가 �
 `Reflector.createDecorator` 를 권한다. 가짜 사용자는 `AuthGuard` 가 `req.user` 를 붙이는
 방식으로(실무 구조와 동일). **역할을 헤더로 받는 건 실서비스에선 금지** — 누구나
 `x-user-role: admin` 을 보낼 수 있다.
+
+#### B — 실제로 붙이며 익힌 것 (2026-09-18)
+
+**`Reflector` 는 두 얼굴이다**
+
+| | 성격 | 쓰는 곳 |
+|---|---|---|
+| `Reflector.createDecorator()` | **static** | 데코레이터를 *만든다*. DI 불필요 |
+| `reflector.get()` | **인스턴스 메서드** | 붙은 값을 *읽는다*. 생성자 주입 필요 |
+
+그래서 `roles.decorator.ts` 는 `Reflector.createDecorator(...)` 를 바로 쓰고,
+`RolesGuard` 는 `constructor(private reflector: Reflector)` 로 받는다. **`@Roles` 를 붙였다고
+`this` 로 꺼낼 수는 없다** — 꼬리표는 *핸들러 함수*(`CatsController.remove`)에 붙지
+guard 인스턴스에 붙지 않는다. "어느 핸들러 것을 볼까"가 요청마다 달라서
+(`context.getHandler()`) 메서드 호출일 수밖에 없다.
+
+**데코레이터와 guard 는 짝이지 종속이 아니다**
+
+`@Roles` 는 `RolesGuard` 가 없어도 붙고 컴파일된다 — 다만 **아무도 안 읽으니 아무 일도
+안 일어난다.** 실제로 하드코딩 버전(`const requiredRoles = ['admin','user']`)에서
+`@Roles` 가 장식으로만 남는 상태를 겪었다. 선언(`@Roles`)과 집행(`RolesGuard`)은 별개다.
+
+**`req.user` 타입 — declaration merging**
+
+`@types/express-serve-static-core/index.d.ts:6-15` 가 `interface Request {}` 를 **빈 채로**
+열어두고 주석으로 "확장하라" 고 명시한다. 407 줄의 진짜 `Request` 가 그걸 상속하므로,
+전역 `Express.Request` 에 넣은 필드가 `express` 의 `Request` 까지 흘러온다.
+
+```ts
+// src/types/express.d.ts
+import { AuthUser } from '../common/types/auth-user';
+declare global {
+    namespace Express {
+        interface Request { user?: AuthUser; }
+    }
+}
+export {};
+```
+
+- **`declare global` 은 TS 기능**이다(Nest·Express 아님). declaration merging + 전역 탈출.
+- **`extends` 와 다르다** — `extends` 는 새 이름을 만들고, merging 은 *기존 이름 자체*를
+  확장한다. `interface MyReq extends Request` 로는 `express` 가 내보내는 `Request` 가
+  안 바뀌므로 목적을 못 이룬다.
+- **`export {}` 가 빠지면 조용히 안 먹는다.** 실제로 처음에 빠뜨렸는데 `AuthUser` 를
+  import 하지도 않은 상태로 **빌드가 통과**했다 — 파일이 안 읽히고 있다는 뜻이었다.
+  `pnpm build` rc=0 이 성공의 증거가 아니었던 사례.
+- `rootDir: "./src"` 라 `.d.ts` 는 **반드시 `src/` 안**에 둬야 한다.
+
+**검증은 역방향으로 한다**
+
+선언이 먹는지 확인하려면 *일부러 틀린 값*을 넣어본다. `roles: 'admin'`(문자열)으로
+바꾸니 `TS2322: Type 'string' is not assignable to type 'string[]'` 이 정확히 그 줄에서
+났다 — 그제야 연결이 증명됐다.
+
+**타입 좁히기(narrowing) 가 캐스팅을 대신한다**
+
+헤더는 `string | string[] | undefined` 다(같은 헤더가 여러 번 올 수 있어서).
+
+```ts
+const raw = request.headers['x-roles'];
+roles: raw
+    ? Array.isArray(raw)
+        ? raw.map((s) => s.trim())          // string[]  로 좁혀짐
+        : raw.split(',').map((s) => s.trim())  // string 으로 좁혀짐
+    : []
+```
+
+`Array.isArray` 는 **값을 배열로 만들지 않는다** — 묻기만 한다. 배열로 만드는 건
+`.split(',')` 이고, `isArray` 는 "split 이 필요한가" 를 판단할 뿐이다. 동시에 TS 가 이걸
+type guard 로 인정해 각 가지에서 타입을 확정하므로 **`as string` 이 불필요**해진다.
+`as` 로 검사를 끄면 배열이 왔을 때 `.split is not a function` 런타임 에러가 난다
+(A 단계 "타입이 거짓말하던 자리" 와 같은 함정을 손으로 재현하는 셈).
+
+`.map(s => s.trim())` 은 **양쪽 가지 모두** 필요하다 — `x-roles: admin, user` 든
+헤더 중복이든 공백이 섞여 올 수 있다. 실측에서 `["admin"," user"]` 로 나왔고,
+trim 이 없으면 `' user'` 가 매칭 실패해 403 이 된다.
+
+**guard 순서는 배열 순서다 — 조율 없음**
+
+```ts
+@UseGuards(AuthGuard, RolesGuard)   // ① → ②. ①이 막으면 ②는 실행조차 안 된다
+```
+
+`AuthGuard` 가 `req.user` 를 붙이고 `RolesGuard` 가 읽으므로 **뒤집으면 `undefined`** 다.
+`user?` 를 optional 로 선언한 덕에 이 실수가 런타임 크래시 대신 타입 에러로 드러난다.
+(레벨이 다르면 전역 → 컨트롤러 → 핸들러 순. 배열 순서는 같은 레벨 안에서만.)
+
+**`if (!roles) return true` 가 필수**
+
+`@Roles` 없는 핸들러는 `roles === undefined` 다. 이 줄이 없으면 `GET /cats` 까지 막힌다.
+배경 보안 리뷰가 여기에 `return false`(기본 거부)를 제안했지만 **이 설계엔 틀렸다** —
+인증은 이미 `AuthGuard` 가 했고 `RolesGuard` 는 *추가* 역할 요구만 본다.
+파일 하나만 보고 앞단 guard 를 모른 오판이었다. **자동 리뷰도 설계와 대조해야 한다.**
+
+**실측 (2026-09-18)**
+
+| 요청 | 결과 |
+|---|---|
+| 헤더 없음 → `GET` | 401 (AuthGuard) |
+| `x-api-key` → `GET` (`@Roles` 없음) | 200 |
+| `x-api-key` + `x-roles: user` → `DELETE` | **403** |
+| `x-api-key` + `x-roles: admin` → `DELETE` | **200** |
+| `x-roles: admin` 만 (키 없음) | 401 |
+| `x-roles: user,admin` → `DELETE` | 404 = 인가 통과 후 "없는 id" (`some` OR 동작) |
+| `x-roles: user, admin` (공백) | 404 = `trim()` 작동 |
+
+403 본문에 `timestamp`·`path` 가 있다 → 6단계 필터가 guard 예외도 잡는다.
+**세 번째 연결 확인**(pipe·AuthGuard 에 이어).
+
+> 중간에 인증/인가가 한 덩어리로 섞인 버전을 거쳤다 — `AuthGuard` 가 `x-roles !== 'admin'`
+> 까지 보게 했더니 조건식이 `||` 로 엮이며 **`x-api-key` 없이 `x-roles: admin` 만으로 200**
+> 이 뚫렸다. `AuthGuard` 는 역할을 *판정하지 않고 담기만* 한다는 경계가 이래서 필요하다.
 
 ### Step 7 에서 익힌 것
 
