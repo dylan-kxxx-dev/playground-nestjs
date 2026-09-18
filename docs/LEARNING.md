@@ -104,7 +104,7 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 7 | Pipes — ParseIntPipe / ValidationPipe | 완료 | `52cdc68` |
 | 8 | Guards — AuthGuard (A: 기본) | 완료 | `41e72ad` |
 | 8 | Guards — @Roles + RolesGuard (B: 메타데이터) | 완료 | `03c2486` |
-| 9 | Interceptors — Logging / Transform | 완료 | |
+| 9 | Interceptors — Logging / Transform | 완료 | `0dba82d` |
 
 ### Step 8 에서 익힌 것
 
