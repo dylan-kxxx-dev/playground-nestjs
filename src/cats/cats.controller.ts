@@ -10,6 +10,7 @@ import {
     ParseIntPipe,
     Patch,
     UseGuards,
+    UseInterceptors,
 } from '@nestjs/common';
 import { UpdateCatDto } from './dto/update-cat.dto';
 import { CreateCatDto } from './dto/create-cat.dto';
@@ -18,6 +19,7 @@ import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { TransformInterceptor } from '../common/interceptors/transform.interceptor';
 
 @UseGuards(AuthGuard, RolesGuard)
 @UseFilters(HttpExceptionFilter)
@@ -25,6 +27,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 export class CatsController {
     constructor(private readonly catsService: CatsService) {}
 
+    @UseInterceptors(TransformInterceptor)
     @Get()
     findAll() {
         return this.catsService.findAll();

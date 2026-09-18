@@ -58,6 +58,9 @@
 | `pnpm lint` 가 깨져 있음 | package.json 스크립트 점검 |
 | `getRequest()` 제네릭을 매번 손으로 | 커스텀 decorator (`@Req()` 래핑 등) |
 | Jest 가 ESM 충돌로 안 돎 | Phase 3 에서 저절로 풀릴 수도 |
+| 성공 `{data}` vs 에러 `{timestamp,…}` 로 응답 형식이 갈림 (9단계) | filter 를 interceptor 형식에 맞추기 |
+| 에러 요청의 소요 시간이 안 찍힘 — `tap` 은 성공만 (9단계) | `finalize` / `tap({next,error})` |
+| 역할을 클라이언트 헤더로 받음 (8단계 stub) | 11단계 Configuration — 환경변수 + `timingSafeEqual` |
 
 > 8·9 단계를 하면서 **불편한 자리를 이 표에 계속 추가**한다. 목적은 "기능 구경"이 아니라
 > **겪은 불편 → 해결책** 순서를 지키는 것 — 반대로 하면 왜 필요한지 모르는 채로 쓰게 된다.
@@ -101,6 +104,7 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 7 | Pipes — ParseIntPipe / ValidationPipe | 완료 | `52cdc68` |
 | 8 | Guards — AuthGuard (A: 기본) | 완료 | `41e72ad` |
 | 8 | Guards — @Roles + RolesGuard (B: 메타데이터) | 완료 | `03c2486` |
+| 9 | Interceptors — Logging / Transform | 완료 | |
 
 ### Step 8 에서 익힌 것
 
@@ -109,6 +113,9 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 ```
 요청 → middleware(5) → [라우팅] → GUARD(8) → interceptor(9) → pipe(7) → 핸들러
 ```
+
+> **9단계에서 보완** — 위 그림은 *가는 길*만 그렸다. interceptor 는 핸들러 **이후에도** 한 번 더
+> 온다. 공식 순서는 `### Step 9 에서 익힌 것` 의 lifecycle 표 참조.
 
 guard 는 **pipe 보다 앞**이다. "처리할 자격이 있나"를 먼저 묻고, 자격이 있어야 입력 검증이
 의미가 있다. 권한 없는 요청의 DTO 를 검증하는 건 낭비.
@@ -301,6 +308,133 @@ trim 이 없으면 `' user'` 가 매칭 실패해 403 이 된다.
 > 중간에 인증/인가가 한 덩어리로 섞인 버전을 거쳤다 — `AuthGuard` 가 `x-roles !== 'admin'`
 > 까지 보게 했더니 조건식이 `||` 로 엮이며 **`x-api-key` 없이 `x-roles: admin` 만으로 200**
 > 이 뚫렸다. `AuthGuard` 는 역할을 *판정하지 않고 담기만* 한다는 경계가 이래서 필요하다.
+
+### Step 9 에서 익힌 것
+
+**앞의 8개와 다른 점 — 유일하게 양방향이다**
+
+guard·pipe·filter 는 한 방향이었다(통과시키거나 막거나). interceptor 는 핸들러 **전과 후**
+양쪽에 낀다. 공식 lifecycle(`/faq/request-lifecycle`) 전문:
+
+```
+1. 요청
+2. Middleware(5)        2.1 전역 → 2.2 모듈
+3. Guards(8)            3.1 전역 → 3.2 컨트롤러 → 3.3 라우트
+4. Interceptors (pre)   4.1 전역 → 4.2 컨트롤러 → 4.3 라우트
+5. Pipes(7)             5.1 전역 → … → 5.4 파라미터
+6. Controller 핸들러
+7. Service
+8. Interceptors (post)  8.1 라우트 → 8.2 컨트롤러 → 8.3 전역   ← 역순!
+9. Exception filters(6) 9.1 라우트 → 9.2 컨트롤러 → 9.3 전역   ← 역순!
+10. 응답
+```
+
+갈 때(4)와 올 때(8)의 순서가 **뒤집힌다** — 양파 껍질처럼 감싼다.
+
+**`next.handle()` 이 분기점**
+
+```ts
+intercept(context, next) {
+    // ① 핸들러 "전"
+    return next.handle().pipe(
+        // ② 핸들러 "후"
+    );
+}
+```
+
+`next.handle()` 을 호출해야 핸들러가 실행되고, 반환값이 **Observable** 로 감싸여 온다.
+**안 부르면 핸들러가 아예 실행되지 않는다**(캐싱 interceptor 가 이 성질을 쓴다).
+
+| 연산자 | 하는 일 |
+|---|---|
+| `tap(...)` | 값을 건드리지 않고 구경만 — 로깅 |
+| `map(v => ...)` | 값을 변환 — 응답 형식 |
+
+v12 에서는 `rxjs/operators` 가 아니라 **`rxjs` 에서 직접 import** 된다.
+
+**실측 — 경계 케이스 (2026-09-18)**
+
+| 요청 | 상태 | `Before` | `After` |
+|---|---|---|---|
+| 정상 `GET /cats/1` | 200 | ✅ | ✅ |
+| 핸들러 예외 `/cats/999` | 404 | ✅ | **❌** |
+| guard 차단(키 없음) | 401 | ❌ | ❌ |
+| 라우트 없음 `/abcdefg` | 404 | ❌ | ❌ |
+| 인가 차단 `DELETE` roles:user | 403 | ❌ | ❌ |
+
+**`tap` 은 성공 값(next 채널)에만 반응한다.** 예외는 error 채널로 흘러 `tap`·`map` 을 건너뛰고
+바로 exception filter 로 간다.
+
+```
+findOne → throw NotFoundException
+              ↓ (error 채널)
+        tap()/map() 건너뜀
+              ↓
+        HttpExceptionFilter(6) → 404
+```
+
+→ **이 로깅은 에러 요청의 소요 시간을 못 잰다.** 성능 모니터링이 목적이면 결함이다.
+잡으려면 `tap({next, error})` 또는 `finalize`(성공·실패·취소 무조건 실행). 미적용 — Phase 1.5 후보.
+
+아래 셋은 `Before` 조차 안 찍혔다. 이유가 각각 다르다:
+- **401·403** — guard(3) 가 interceptor(4) 보다 **앞**이라 도달조차 못 한다
+- **404(라우트 없음)** — 실행될 핸들러가 없으니 붙은 interceptor 도 없다(8단계 `/abcdefg` 와 동일)
+
+반면 **middleware 로그는 5건 전부 찍혔다** — middleware(2) 가 guard(3) 보다 앞이라
+차단 여부와 무관하게 실행된다. 5단계와 9단계의 위치 차이가 로그로 증명됐다.
+
+**실행 순서 ≠ 로그 순서**
+
+```
+Before... findOne
+After... 1ms findOne
+[2026-09-18T…] GET /cats/1 - 200   ← middleware 가 마지막
+```
+
+middleware 가 먼저 실행되는데 로그는 나중이다. `res.on('finish')` 콜백이라 **응답 전송 완료 후**
+찍히기 때문. 로그 순서만 보고 실행 순서를 판단하면 틀린다.
+
+**`TransformInterceptor` — 성공 응답만 감싼다**
+
+```ts
+export interface Response<T> { data: T; }
+
+export class TransformInterceptor<T> implements NestInterceptor<T, Response<T>> {
+    intercept(...): Observable<Response<T>> {
+        return next.handle().pipe(map((data) => ({ data })));
+    }
+}
+```
+
+| 요청 | 응답 |
+|---|---|
+| `GET /cats` (`@UseInterceptors` 적용) | `{"data":[{…}]}` |
+| `GET /cats/1` (미적용) | `{"id":1,…}` |
+| `GET /cats/999` (에러) | `{"timestamp","statusCode","path","message"}` — **안 감싸짐** |
+
+**interceptor 와 filter 의 경계**: 성공 응답 형식은 interceptor 가, 에러 응답 형식은 filter 가 정한다.
+그래서 지금 이 앱은 응답 형식이 둘로 갈려 있다(`{data}` vs `{timestamp,…}`).
+통일하려면 filter 쪽도 맞춰야 한다 — **Phase 1.5 후보**.
+
+`map(data => { data })` 는 블록으로 해석돼 `undefined` 를 반환한다. 객체 리터럴은
+**`map(data => ({ data }))`** 로 괄호를 감싼다.
+
+**제네릭 `<T>` 는 "빈칸"이다**
+
+```ts
+NestInterceptor<T,            Response<T>>
+                ↑             ↑
+            핸들러가 준 것     내보낼 것
+```
+
+`findAll` 에 붙으면 `T = Cat[]` → `Response<Cat[]>` = `{ data: Cat[] }`. **`T` 하나를 바꾸면
+세 군데가 같이 움직인다.** 컨트롤러에서 `<Cat[]>` 을 명시하지 않는 이유는 핸들러 반환 타입으로
+**TS 가 추론**하기 때문. (`createDecorator<string[]>()` 는 추론 근거가 없어 명시했다 — 대비되는 사례.)
+
+제네릭도 **컴파일 때 사라진다** — `dist/*.js` 에서 `getRequest<Request>()` 가
+`getRequest()` 로 나오는 것을 실측 확인. 타입은 전부 컴파일러에게 하는 말이고
+런타임 동작에 영향이 없다. **예외는 데코레이터** — 실제 함수 호출이라 JS 에 남고,
+`emitDecoratorMetadata` 덕에 생성자 파라미터 타입이 런타임까지 전달돼 Nest 의 DI 가 작동한다.
 
 ### Step 7 에서 익힌 것
 
