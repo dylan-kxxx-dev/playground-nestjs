@@ -51,7 +51,7 @@
 |---|---|
 | `@Param('id', ParseIntPipe)` 가 3곳 반복 | 전역 pipe 설정 / `@Controller` 레벨 적용 |
 | 404 `throw` 3줄이 3곳 반복 | service 로 옮기기 / 도메인 예외 + 변환 필터(C안) |
-| DTO 두 개가 필드만 다르고 거의 동일 | `PartialType` 등 mapped types (`@nestjs/mapped-types`) |
+| ~~DTO 두 개가 필드만 다르고 거의 동일~~ | ✅ **해결** — `PartialType` (Step 10) |
 | `class-validator` 에러 메시지가 영어 고정 | decorator 의 message 옵션 / i18n |
 | 응답 형식을 필터에서 손으로 조립 | interceptor(9)로 성공 응답까지 일관되게 |
 | 서버 재시작마다 데이터 소멸 | Phase 2 Database — 지금은 정상 |
@@ -61,6 +61,7 @@
 | 성공 `{data}` vs 에러 `{timestamp,…}` 로 응답 형식이 갈림 (9단계) | filter 를 interceptor 형식에 맞추기 |
 | 에러 요청의 소요 시간이 안 찍힘 — `tap` 은 성공만 (9단계) | `finalize` / `tap({next,error})` |
 | 역할을 클라이언트 헤더로 받음 (8단계 stub) | 11단계 Configuration — 환경변수 + `timingSafeEqual` |
+| `{"age":null}` 이 200 통과 — `IsOptional` 은 `null` 도 skip (10단계) | `PartialType(..., { skipNullProperties: false })` / service 필터를 `null` 까지 |
 
 > 8·9 단계를 하면서 **불편한 자리를 이 표에 계속 추가**한다. 목적은 "기능 구경"이 아니라
 > **겪은 불편 → 해결책** 순서를 지키는 것 — 반대로 하면 왜 필요한지 모르는 채로 쓰게 된다.
@@ -105,6 +106,119 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 8 | Guards — AuthGuard (A: 기본) | 완료 | `41e72ad` |
 | 8 | Guards — @Roles + RolesGuard (B: 메타데이터) | 완료 | `03c2486` |
 | 9 | Interceptors — Logging / Transform | 완료 | `0dba82d` |
+| 10 | Phase 1.5 — DTO 중복 제거 (`PartialType`) | 완료 | |
+
+### Step 10 에서 익힌 것 (Phase 1.5 — DTO 중복)
+
+`UpdateCatDto` 13줄 → 4줄. `class-validator` import 3개 소멸.
+
+```ts
+export class UpdateCatDto extends PartialType(CreateCatDto) {}
+```
+
+**`PartialType` 은 `extends` 가 아니다 — mixin 이다**
+
+문법상 `extends` 를 쓰지만 물려받는 대상이 클래스가 아니라 **함수 호출 결과**다.
+`PartialType` 은 클래스를 먹고 **새 클래스를 뱉는 함수**다.
+
+```ts
+class UpdateCatDto extends CreateCatDto {}               // 그냥 상속
+class UpdateCatDto extends PartialType(CreateCatDto) {}  // 함수 결과를 상속
+```
+
+그냥 `extends CreateCatDto` 였다면 `name: string` 이 **필수 그대로**라
+`{"age":5}` 만 보낸 PATCH 가 400 이 된다 — 7단계에서 실제로 밟은 그 실패다.
+`PartialType` 이 추가로 하는 일이 정확히 두 가지:
+
+```
+1. 타입 수준:   name: string  →  name?: string
+2. 런타임 수준: 프로퍼티마다 IsOptional() 을 붙인다   ← extends 로는 불가능
+```
+
+2번이 핵심. 데코레이터는 **런타임에 실제 실행되는 함수**(9단계 정리)라, 상속만으로는
+"이 필드는 없어도 된다" 는 메타데이터가 새로 생기지 않는다.
+
+**문서가 답하지 않아 소스를 봤다**
+
+공식 문서는 *"all the properties of the input type set to optional"* 이라고만 해서
+**타입만 optional 인지, 런타임 검증까지인지 구분되지 않는다.** `partial-type.helper.ts` 확인:
+
+```ts
+options.skipNullProperties === false
+  ? applyValidateIfDefinedDecorator(PartialClassType, key)
+  : applyIsOptionalDecorator(PartialClassType, key)
+```
+
+`skipNullProperties` 기본값이 `true` 라 **프로퍼티마다 `IsOptional()` 이 런타임에 붙는다.**
+→ 실측 A번으로 증명(아래 표). **문서에 없는 계약은 소스 + 실측으로 확인한다.**
+
+**패키지가 3갈래 — 앱 종류에 종속된다**
+
+```
+swagger 사용   → @nestjs/swagger 의 PartialType    (validator + ApiProperty 복사)
+graphql 사용   → @nestjs/graphql 의 PartialType    (validator + Field 복사)
+둘 다 없음     → @nestjs/mapped-types 의 PartialType (validator 만)   ← 현재
+```
+
+셋은 **시그니처가 같고 복사 범위만 다르다.** 그래서 틀려도 빌드가 통과하고 API 도
+정상 동작한다 — swagger 앱에서 `mapped-types` 판을 쓰면 `@ApiProperty()` 가 안 따라와
+**Swagger 문서에서 그 DTO 만 빈 껍데기로 나간다.** 공식 문서가 *"various, undocumented
+side-effects"* 라고만 적은 게 이 부류. **죽지 않고 조용히 빠지는 실패.**
+
+> **swagger 를 붙이는 날 이 import 를 같이 옮겨야 한다.** 안 옮기면 계약서가 빈 채로 나간다.
+
+**옵션은 누가 읽느냐로 갈린다 — 섞으면 조용히 무시된다**
+
+| | `whitelist` | `skipNullProperties` |
+|---|---|---|
+| 소유자 | `ValidationPipe` (`@nestjs/common`) | `PartialType` (`@nestjs/mapped-types`) |
+| 적는 곳 | `main.ts` 의 `new ValidationPipe({...})` | `PartialType(CreateCatDto, {...})` |
+| 시점 | **요청마다** | **클래스 생성 시 1회** (앱 부팅) |
+| 범위 | 전역 (모든 DTO) | 그 DTO 하나 |
+
+`ValidationPipe` 에 `skipNullProperties` 를 넣어도 **에러 없이 그냥 무시된다** —
+`ValidationPipe` 는 그 옵션을 모른다. 7단계의 `useGlobalPipes` 위치 함정과 같은 부류.
+
+**`whitelist: true` 가 막고 있는 것** (7단계 복습)
+
+DTO 에 decorator 가 붙은 프로퍼티만 남기고 **나머지를 제거**한다. 없으면
+`CatsService.update` 의 `...changes` 스프레드를 타고 아무 필드나 저장 객체로 들어간다 —
+`{"id":999}` 로 id 를 덮어쓸 수 있다(mass assignment). 다만 **버리되 알려주지 않는다**
+(200 응답) → `forbidNonWhitelisted` 가 열린 결정으로 남아 있는 이유.
+
+**실측** (`x-api-key: k`, localhost:3000)
+
+| # | 요청 | 결과 | 증명한 것 |
+|---|------|------|-----------|
+| A | `PATCH {"age":5}` | **200** | `@IsOptional()` 을 한 줄도 안 썼는데 부분 수정 통과 — 런타임 부착 증거 |
+| B | `PATCH {"name":123}` | **400** `name must be a string` | optional 화 ≠ 검증 해제. `@IsString()` 은 살아있다 |
+| C | `PATCH {"hack":1,"age":9}` | **200**, `hack` 제거 | `whitelist` 가 상속 DTO 에도 작동 |
+| D | `PATCH {}` | **200** | 전부 없어도 유효 |
+| E | `PATCH {"age":null}` | **200**, `age:null` 저장 | ⚠️ 아래 |
+| F | `PATCH /cats/999` | **404** | 기존 동작 무회귀 |
+| G | `POST {"age":5}` | **400** `name`·`breed` 필수 | **`CreateCatDto` 는 안 건드려진다** — 새 클래스를 반환하는 mixin 의 증거 |
+
+**E — `null` 이 통과한다**
+
+`IsOptional()` 은 class-validator 에서 `undefined` 와 **`null` 을 둘 다** "검증 건너뛰기" 로
+본다. 그래서 `age: number` 인데 런타임 값이 `null` 이 된다.
+
+**`PartialType` 때문에 생긴 게 아니다** — 손으로 `@IsOptional()` 을 붙였던 이전 DTO 도
+동일했다. **회귀가 아니라 원래 있던 구멍이 눈에 띈 것.** Phase 1.5 표에 추가.
+12단계 DB 의 `NOT NULL` 제약과 함께 다시 만날 자리.
+
+**재수출(port) 한 겹은 미도입 — 조건부 보류**
+
+`PartialType` import 를 `src/common/dto/mapped-types.ts` 로 재수출하면 swagger 전환 시
+**한 줄만** 고치면 된다(변경 지점 O(n) → O(1)). 다만:
+
+- 엄밀히는 port & adapter 가 **아니다.** 코어가 인터페이스를 소유하지 않고 벤더 API 를
+  그대로 재수출할 뿐이라 **의존 방향이 뒤집히지 않는다.** 정확히는 anti-corruption layer.
+- 현재 사용처가 **1곳**이라 아끼는 게 없다. 안 올 수도 있는 변경에 미리 층을 쌓는 것은
+  speculative abstraction.
+
+> **재검토 조건**: `PartialType` 사용처가 3~4곳을 넘거나, swagger 도입이 확정될 때.
+> 진짜 port & adapter 가 필요한 자리는 **12단계 ORM 선택**이다.
 
 ### Step 8 에서 익힌 것
 
