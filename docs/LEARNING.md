@@ -59,7 +59,7 @@
 | `getRequest()` 제네릭을 매번 손으로 | 커스텀 decorator (`@Req()` 래핑 등) |
 | Jest 가 ESM 충돌로 안 돎 | Phase 3 에서 저절로 풀릴 수도 |
 | 성공 `{data}` vs 에러 `{timestamp,…}` 로 응답 형식이 갈림 (9단계) | filter 를 interceptor 형식에 맞추기 |
-| 에러 요청의 소요 시간이 안 찍힘 — `tap` 은 성공만 (9단계) | `finalize` / `tap({next,error})` |
+| ~~에러 요청의 소요 시간이 안 찍힘 — `tap` 은 성공만 (9단계)~~ | ✅ **해결** — `finalize` 로 교체 (Step 13) |
 | 역할을 클라이언트 헤더로 받음 (8단계 stub) | 11단계 Configuration — 환경변수 + `timingSafeEqual` |
 | `{"age":null}` 이 200 통과 — `IsOptional` 은 `null` 도 skip (10단계) | `PartialType(..., { skipNullProperties: false })` / service 필터를 `null` 까지 |
 
@@ -109,6 +109,74 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 10 | Phase 1.5 — DTO 중복 제거 (`PartialType`) | 완료 | `1599288` |
 | 11 | Phase 1.5 — 404 중복 제거 (도메인 예외 + 필터) | 완료 | `1cdfe76` |
 | 12 | Phase 1.5 — ParseIntPipe 반복 제거 (전역 transform) | **기각** — 실측으로 부적합 확인 | |
+| 13 | Phase 1.5 — 에러 요청 소요시간 측정 (`tap`→`finalize`) | 완료 | `bed82f2` |
+
+### Step 13 에서 익힌 것 (Phase 1.5 — 에러 요청 소요시간)
+
+`LoggingInterceptor` 의 `tap` 을 `finalize` 로 바꿨다. 한 줄 변경이지만 관측 범위가 달라진다.
+
+```ts
+// 전 — 성공 채널에만 걸린다
+tap(() => console.log(`After... ${Date.now() - now}ms ...`))
+
+// 후 — 성패 무관하게 한 번
+finalize(() => console.log(`After... ${Date.now() - now}ms ...`))
+```
+
+**`tap(fn)` 은 성공만 본다**
+
+rxjs 의 `tap` 에 콜백을 **하나만** 넘기면 그것은 `next` 핸들러다. 예외는 error 채널로
+흐르는데 거기 핸들러가 없으니 아무 일도 안 일어난다. `now` 를 만들어놓고 **절반만 쓰던
+셈**이었다.
+
+**실측 — 전/후**
+
+| 요청 | 전 | 후 |
+|---|---|---|
+| `POST /cats` 201 | Before + After 4ms | Before + After |
+| `GET /cats/1` 200 | Before + After 0ms | Before + After |
+| `GET /cats/999` 404 | **Before 만** | Before + After 1ms |
+| `GET /cats/abc` 400 | **Before 만** | Before + After 1ms |
+
+바뀐 것은 **0ms → 1ms 가 아니라 "없음 → 1ms"** 다. 측정값의 오차가 아니라 **관측 가능
+여부**가 달라졌다. (`finalize` 는 구독 종료 시 실행돼 `tap` 보다 미세하게 늦지만 그 차이는
+의미 없다.)
+
+**`/cats/abc` 에 `Before` 가 찍힌 것이 생명주기를 증명한다**
+
+400 은 `ParseIntPipe` 가 낸다. 그런데 `Before` 가 이미 찍혀 있었다 — **인터셉터가 파이프보다
+앞**이기 때문이다(README 흐름도 3 → 4). 즉 파이프에서 막힌 요청도 인터셉터를 통과했고,
+그래서 `finalize` 가 잡을 수 있다.
+
+**같은 "로깅" 인데 미들웨어는 안 놓쳤다**
+
+`LoggerMiddleware` 는 네 경우 모두 찍혔다(`[…] GET /cats/abc - 400`). `res.on('finish')` 를
+쓰기 때문에 **응답이 나가기만 하면** 걸린다. 붙는 자리가 다르면 놓치는 것도 다르다:
+
+| | 붙는 곳 | 실패 요청 |
+|---|---|---|
+| `LoggerMiddleware` | Express 층, `res.on('finish')` | 놓치지 않음 |
+| `LoggingInterceptor` + `tap` | Nest 층, 성공 채널 | **놓침** |
+| `LoggingInterceptor` + `finalize` | Nest 층, 종료 시 | 놓치지 않음 |
+
+**`finalize` = `try/finally`**
+
+```
+try     { 핸들러 }
+catch   { → 필터 }
+finally { 시간 찍기 }   ← finalize
+```
+
+시간 측정은 **성패와 무관한 관심사**다. `tap` 은 성공 채널에 붙어서 그 무관함을 표현하지
+못했고, `finalize` 는 표현한다. 성공/실패에 **다른 내용**을 찍고 싶을 때만
+`tap({ next, error })` 가 맞다 — 지금은 에러 정보를 필터가 이미 응답에 담고 미들웨어가
+상태코드를 찍으므로 세 번째 화자가 필요 없다.
+
+**값어치는 지금이 아니라 나중에 나온다**
+
+메모리 배열이라 전부 1ms 미만이니 지금은 체감이 없다. Phase 2 에서 DB 가 붙으면 달라진다 —
+`GET /cats/999` 가 **DB 조회 200ms 뒤에** 404 를 내는 경우, 미들웨어는 "404 였다" 만 알려주고
+**"오래 걸렸다" 는 아무도 말하지 않는다.** 느린 실패는 느린 성공보다 찾기 어렵다.
 
 ### Step 12 에서 익힌 것 (Phase 1.5 — ParseIntPipe 반복, **기각**)
 
