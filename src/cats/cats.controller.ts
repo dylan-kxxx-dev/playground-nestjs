@@ -1,25 +1,24 @@
 import {
     Body,
-    Param,
     Controller,
     Delete,
     Get,
-    Post,
-    NotFoundException,
-    UseFilters,
+    Param,
     ParseIntPipe,
     Patch,
+    Post,
+    UseFilters,
     UseGuards,
     UseInterceptors,
 } from '@nestjs/common';
-import { UpdateCatDto } from './dto/update-cat.dto';
-import { CreateCatDto } from './dto/create-cat.dto';
-import { CatsService } from './cats.service';
+import { Roles } from '../common/decorators/roles.decorator';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
-import { Roles } from '../common/decorators/roles.decorator';
 import { TransformInterceptor } from '../common/interceptors/transform.interceptor';
+import { CatsService } from './cats.service';
+import { CreateCatDto } from './dto/create-cat.dto';
+import { UpdateCatDto } from './dto/update-cat.dto';
 
 @UseGuards(AuthGuard, RolesGuard)
 @UseFilters(HttpExceptionFilter)
@@ -34,22 +33,11 @@ export class CatsController {
     }
     @Get(':id')
     findOne(@Param('id', ParseIntPipe) id: number) {
-        const result = this.catsService.findOne(id);
-        if (result === undefined) {
-            throw new NotFoundException(`Cat with id ${id} not found`);
-        }
-        return result;
+        return this.catsService.findOne(id);
     }
     @Patch(':id')
-    update(
-        @Param('id', ParseIntPipe) id: number,
-        @Body() updateCatDto: UpdateCatDto,
-    ) {
-        const result = this.catsService.update(id, updateCatDto);
-        if (result === undefined) {
-            throw new NotFoundException(`Cat with id ${id} not found`);
-        }
-        return result;
+    update(@Param('id', ParseIntPipe) id: number, @Body() updateCatDto: UpdateCatDto) {
+        return this.catsService.update(id, updateCatDto);
     }
     @Post()
     create(@Body() createCatDto: CreateCatDto) {
@@ -58,10 +46,6 @@ export class CatsController {
     @Roles(['admin'])
     @Delete(':id')
     remove(@Param('id', ParseIntPipe) id: number) {
-        const result = this.catsService.remove(id);
-        if (result === undefined) {
-            throw new NotFoundException(`Cat with id ${id} not found`);
-        }
-        return result;
+        return this.catsService.remove(id);
     }
 }

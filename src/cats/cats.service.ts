@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Cat } from './interfaces/cat.interface';
 import { CreateCatDto } from './dto/create-cat.dto';
 import { UpdateCatDto } from './dto/update-cat.dto';
+import { ResourceNotFoundError } from '../common/exceptions/resource-not-found.error';
 
 @Injectable()
 export class CatsService {
@@ -23,26 +24,28 @@ export class CatsService {
         return this.cats;
     }
 
-    findOne(id: number): Cat | undefined {
-        return this.cats.find((cat) => cat.id === id);
+    findOne(id: number): Cat {
+        const cat = this.cats.find((cat) => cat.id === id);
+        if (!cat) {
+            throw new ResourceNotFoundError('Cat');
+        }
+        return cat;
     }
 
-    update(id: number, dto: UpdateCatDto): Cat | undefined {
+    update(id: number, dto: UpdateCatDto): Cat {
         const catIndex = this.cats.findIndex((cat) => cat.id === id);
         if (catIndex === -1) {
-            return undefined;
+            throw new ResourceNotFoundError('Cat');
         }
-        const changes = Object.fromEntries(
-            Object.entries(dto).filter(([, v]) => v !== undefined),
-        );
+        const changes = Object.fromEntries(Object.entries(dto).filter(([, v]) => v !== undefined));
         this.cats[catIndex] = { ...this.cats[catIndex], ...changes };
         return this.cats[catIndex];
     }
 
-    remove(id: number): Cat | undefined {
+    remove(id: number): Cat {
         const catIndex = this.cats.findIndex((cat) => cat.id === id);
         if (catIndex === -1) {
-            return undefined;
+            throw new ResourceNotFoundError('Cat');
         }
         return this.cats.splice(catIndex, 1)[0];
     }
