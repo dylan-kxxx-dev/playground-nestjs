@@ -1,5 +1,5 @@
 import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
-import { Observable, tap } from 'rxjs';
+import { finalize, Observable } from 'rxjs';
 
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
@@ -9,7 +9,7 @@ export class LoggingInterceptor implements NestInterceptor {
         return next
             .handle()
             .pipe(
-                tap(() =>
+                finalize(() =>
                     console.log(
                         `After... ${Date.now() - now}ms ${context.getClass().name} ${context.getHandler().name}`,
                     ),
