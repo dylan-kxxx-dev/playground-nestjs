@@ -49,13 +49,13 @@
 
 | 불편했던 것 | 확인해볼 방향 |
 |---|---|
-| `@Param('id', ParseIntPipe)` 가 3곳 반복 | 전역 pipe 설정 / `@Controller` 레벨 적용 |
+| `@Param('id', ParseIntPipe)` 가 3곳 반복 | ⚠️ **전역 `transform: true` 시도 → 기각** (Step 12). 변환은 되지만 실패를 안 막아 `/cats/abc` 가 400→404 로 퇴행. 현행 유지 |
 | ~~404 `throw` 3줄이 3곳 반복~~ | ✅ **해결** — 도메인 예외 + 전역 필터 (Step 11) |
 | ~~DTO 두 개가 필드만 다르고 거의 동일~~ | ✅ **해결** — `PartialType` (Step 10) |
 | `class-validator` 에러 메시지가 영어 고정 | decorator 의 message 옵션 / i18n |
 | 응답 형식을 필터에서 손으로 조립 | interceptor(9)로 성공 응답까지 일관되게 |
 | 서버 재시작마다 데이터 소멸 | Phase 2 Database — 지금은 정상 |
-| `pnpm lint` 가 깨져 있음 | package.json 스크립트 점검 |
+| ~~`pnpm lint` 가 깨져 있음~~ | ⚠️ **오진이었다** — 스크립트는 `oxlint src/ test/` 로 올바르다. rtk 셸 훅이 명령을 가로채 eslint 로 돌리는 것이 원인(2026-09-22 실측). 레포에서 고칠 것 없음 → `pnpm exec oxlint src/ test/` 사용 |
 | `getRequest()` 제네릭을 매번 손으로 | 커스텀 decorator (`@Req()` 래핑 등) |
 | Jest 가 ESM 충돌로 안 돎 | Phase 3 에서 저절로 풀릴 수도 |
 | 성공 `{data}` vs 에러 `{timestamp,…}` 로 응답 형식이 갈림 (9단계) | filter 를 interceptor 형식에 맞추기 |
@@ -108,6 +108,123 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 9 | Interceptors — Logging / Transform | 완료 | `0dba82d` |
 | 10 | Phase 1.5 — DTO 중복 제거 (`PartialType`) | 완료 | `1599288` |
 | 11 | Phase 1.5 — 404 중복 제거 (도메인 예외 + 필터) | 완료 | `1cdfe76` |
+| 12 | Phase 1.5 — ParseIntPipe 반복 제거 (전역 transform) | **기각** — 실측으로 부적합 확인 | |
+
+### Step 12 에서 익힌 것 (Phase 1.5 — ParseIntPipe 반복, **기각**)
+
+**결론부터: 공식 문서가 권장하는 방법을 시도했고, 실측으로 기각했다.** 코드는 롤백했다.
+반복은 그대로 남아 있다.
+
+목표는 `@Param('id', ParseIntPipe)` 3회 반복 제거였다. 기준은 *"실무에서 보편적이고
+공식 문서가 권장하는 방향"* — 문서가 1순위.
+
+**v12 문서가 보여주는 유일한 방법**
+
+조사 결과 반복을 실제로 없애는 방법은 하나뿐이었다
+(`techniques/validation` → "Transform payload objects"):
+
+```ts
+// main.ts
+app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+
+// controller — ParseIntPipe 없이 타입만으로
+@Get(':id')
+findOne(@Param('id') id: number) { ... }
+```
+
+> "With the auto-transformation option enabled, the `ValidationPipe` will also perform
+> conversion of primitive types. … the `ValidationPipe` will **try to** automatically
+> convert a string identifier to a number."
+
+나머지는 전부 문서 근거가 없었다:
+
+| 방법 | v12 문서 지위 |
+|---|---|
+| `ValidationPipe({ transform: true })` | ✅ 명시적 코드 예시 |
+| `@Param('id', ParseIntPipe)` 반복 | ✅ 기본 바인딩 ("auto-transformation 이 꺼진 경우의 대안") |
+| 커스텀 데코레이터에 파이프 번들 | ❌ 예시 없음 — 호출부 적용만 보여줘 반복이 남는다 |
+| 컨트롤러 레벨 `@UsePipes(ParseIntPipe)` | ❌ 서술·예시 없음 |
+| `enableImplicitConversion` | ❌ 문자열 자체가 부재 |
+
+**실측 — 대조군이 원인을 확정했다**
+
+`findOne` 한 곳에서만 `ParseIntPipe` 를 빼고, `remove` 에는 남겨 대조군으로 썼다.
+
+| 요청 | `ParseIntPipe` | 결과 |
+|---|---|---|
+| `GET /cats/1` | 제거 | **200** ✅ 변환은 된다 (`'1'` → `1`) |
+| `GET /cats/abc` | 제거 | **404** `"Cat not found"` ❌ |
+| `GET /cats/1.5` | 제거 | **404** ❌ |
+| `DELETE /cats/abc` | **남김** | **400** `"Validation failed (numeric string is expected)"` |
+
+같은 `abc` 인데 핸들러에 따라 **400 과 404 로 갈렸다.** 차이는 `ParseIntPipe` 유무뿐이므로
+원인이 특정됐다 — 한 번에 세 곳을 다 지웠다면 "404 가 왜 나지" 로 헤맸을 자리다.
+
+**`"try to"` 의 정체 — 실패하면 거부가 아니라 통과다**
+
+문서 표현이 정확했다. 변환에 실패해도 예외를 던지지 않고 **그냥 넘긴다**:
+
+```
+'abc'  → NaN   → cat.id === NaN   항상 false → 404
+'1.5'  → 1.5   → cat.id === 1.5   항상 false → 404
+```
+
+`ParseIntPipe` 는 "숫자로 못 바꾸면 **400**", `transform` 은 "못 바꾸면 **그대로 통과**" 다.
+문서에 실패 동작 서술이 없는 게 누락이 아니라 **막지 않기 때문**이었다.
+
+**왜 이게 단순한 기능 차이가 아니라 퇴행인가**
+
+| | 의미 | 클라이언트가 아는 것 |
+|---|---|---|
+| 400 | "요청이 잘못됐다" | 내가 보낸 값이 틀렸구나 |
+| 404 | "그런 리소스가 없다" | 데이터가 없나 보다 — **원인을 못 찾는다** |
+
+에러가 아니라 **"없는 리소스" 로 위장**한다. `/cats/1.5` 가 특히 나쁘다 — 숫자를 보냈는데
+404 가 나오니 디버깅이 어렵다. **조용한 실패가 시끄러운 실패보다 나쁘다**는 이 레포의
+반복 주제(`=== undefined`, `IsOptional` 의 `null`, `useGlobalPipes` 위치)와 같은 축이다.
+
+**타입 주석이 런타임 동작을 결정한다 — 드문 경우**
+
+`transform` 은 `@Param('id') id: number` 의 **`number` 를 읽고** 변환한다. 타입은 컴파일 때
+사라지는데 어떻게 읽나? `tsconfig.json` 의 **`emitDecoratorMetadata: true`** 가 데코레이터
+붙은 파라미터의 타입을 메타데이터로 남기기 때문이다.
+
+9단계에서 정리한 *"`implements`·`<T>` 는 컴파일 때 사라진다"* 의 **예외**다. 그래서
+`number` 를 지우거나 `any` 로 바꾸면 변환이 **조용히 멈춘다** — 채택했다면 이게 새 함정이
+됐을 자리다.
+
+**문서 조사의 함정 — `curl` 로는 v12 문서를 읽을 수 없다**
+
+`curl https://docs.nestjs.com/v12/...` 로 받으면 **세 페이지가 전부 같은 19KB Angular SPA
+셸**(본문 0 바이트, md5 동일)이다. grep 으로 "이 문서에 X 가 없다" 를 판정하면 **전량 거짓
+음성**이 된다. 렌더링된 본문으로 봐야 한다.
+
+`CLAUDE.md` 의 Tool Output Uncertainty — *"빈 결과를 근거로 존재하지 않는다고 결론내지
+않는다"* 의 사례가 하나 더 늘었다. 이번 조사의 ❌ 판정들은 본문 + 리터럴 검색 교차 확인으로
+얻은 것이다.
+
+**게이트를 먼저 둔 것이 비용을 줄였다**
+
+플랜이 Task 1 을 **코드를 남기지 않는 게이트**로 분리했다: `transform` 켜고 한 곳만 바꿔
+`/cats/abc` 를 때려보는 것. 실패했을 때 되돌린 것은 **`findOne` 한 줄 + `main.ts` 한 줄**
+이었다. 세 곳과 import 까지 고친 뒤 발견했으면 롤백 범위가 훨씬 컸다.
+
+> **문서에 답이 없는 항목이 채택 조건일 때는, 구현이 아니라 실험이 먼저다.**
+
+**되돌릴 조건 / 다음에 다시 다룬다면**
+
+문서 권장 경로는 닫혔다. 남은 선택지는 셋이고, 전부 **문서에 없는 길**이다:
+
+| 선택 | 내용 |
+|---|---|
+| 현행 유지 | `@Param('id', ParseIntPipe)` 반복 3회를 그대로 둔다 (지금 여기) |
+| 혼합 | 전역 `transform` + `:id` 에만 `ParseIntPipe`. 문서에 섞는 예시 없음 |
+| 커스텀 파이프 | `transform` 후 `NaN`·비정수를 400 으로 막는 파이프 자작 |
+
+다시 다룰 때의 새 질문은 *"문서에 없는 길을 갈 것인가"* 다. 컨트롤러가 늘어 반복 비용이
+실제로 커졌을 때 재검토한다 — 지금은 3회뿐이라 현행이 싸다.
+
+**남은 사실 하나**: `ParseIntPipe` 는 소수점도 막는다(`/cats/1.5` → 400). 이번에 처음 실측했다.
 
 ### Step 11 에서 익힌 것 (Phase 1.5 — 404 중복)
 
