@@ -8,12 +8,10 @@ import {
     Patch,
     Post,
     UseGuards,
-    UseInterceptors,
 } from '@nestjs/common';
 import { Roles } from '../common/decorators/roles.decorator';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
-import { TransformInterceptor } from '../common/interceptors/transform.interceptor';
 import { CatsService } from './cats.service';
 import { CreateCatDto } from './dto/create-cat.dto';
 import { UpdateCatDto } from './dto/update-cat.dto';
@@ -23,7 +21,6 @@ import { UpdateCatDto } from './dto/update-cat.dto';
 export class CatsController {
     constructor(private readonly catsService: CatsService) {}
 
-    @UseInterceptors(TransformInterceptor)
     @Get()
     findAll() {
         return this.catsService.findAll();
