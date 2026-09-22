@@ -50,7 +50,7 @@
 | 불편했던 것 | 확인해볼 방향 |
 |---|---|
 | `@Param('id', ParseIntPipe)` 가 3곳 반복 | 전역 pipe 설정 / `@Controller` 레벨 적용 |
-| 404 `throw` 3줄이 3곳 반복 | service 로 옮기기 / 도메인 예외 + 변환 필터(C안) |
+| ~~404 `throw` 3줄이 3곳 반복~~ | ✅ **해결** — 도메인 예외 + 전역 필터 (Step 11) |
 | ~~DTO 두 개가 필드만 다르고 거의 동일~~ | ✅ **해결** — `PartialType` (Step 10) |
 | `class-validator` 에러 메시지가 영어 고정 | decorator 의 message 옵션 / i18n |
 | 응답 형식을 필터에서 손으로 조립 | interceptor(9)로 성공 응답까지 일관되게 |
@@ -106,7 +106,169 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 8 | Guards — AuthGuard (A: 기본) | 완료 | `41e72ad` |
 | 8 | Guards — @Roles + RolesGuard (B: 메타데이터) | 완료 | `03c2486` |
 | 9 | Interceptors — Logging / Transform | 완료 | `0dba82d` |
-| 10 | Phase 1.5 — DTO 중복 제거 (`PartialType`) | 완료 | |
+| 10 | Phase 1.5 — DTO 중복 제거 (`PartialType`) | 완료 | `1599288` |
+| 11 | Phase 1.5 — 404 중복 제거 (도메인 예외 + 필터) | 완료 | `1cdfe76` |
+
+### Step 11 에서 익힌 것 (Phase 1.5 — 404 중복)
+
+controller 의 404 검사 3줄 × 3곳 소멸. 다섯 핸들러가 전부 **service 위임 한 줄**이 됐다.
+
+```ts
+// 전
+const result = this.catsService.findOne(id);
+if (result === undefined) {
+    throw new NotFoundException(`Cat with id ${id} not found`);
+}
+return result;
+
+// 후
+return this.catsService.findOne(id);
+```
+
+**층의 책임 분리 — 예외는 "무슨 일", 필터는 "HTTP 로 어떻게"**
+
+service 가 `NotFoundException` 을 던지면 **모든 소비자가 HTTP 라고 가정**하는 것이다.
+이 레포는 이미 소비자가 둘(`CatsController`·`AppController`)이라 그 가정이 깨진다.
+CLI·큐·gRPC 가 붙으면 더 심해진다.
+
+| 층 | 아는 것 | 모르는 것 |
+|---|---|---|
+| `ResourceNotFoundError` | "Cat 을 못 찾았다" | 404, HTTP, Express |
+| `ResourceNotFoundFilter` | "그건 404 다" | 왜 못 찾았는지 |
+
+**404 가 등장하는 시점이 언제인지** 보면 분리가 눈에 보인다 —
+예외 클래스에는 숫자가 **아예 없다.** `response.status(HttpStatus.NOT_FOUND)` 가 처음이다.
+
+**예외 → 응답까지의 순서**
+
+```
+1. service     Cat 못 찾음 → throw new ResourceNotFoundError('Cat')
+                 ↑ 함수가 그 자리에서 탈출. 아래 줄 실행 안 됨
+2. controller  const 대입도 return 도 도달 못 함 — 그냥 지나감
+3. Nest        등록된 필터 순회, exception instanceof <@Catch 의 타입> 으로 선택
+                 좁은 스코프부터: 핸들러 → 컨트롤러 → 전역
+4. filter      catch(exception, host) 호출 → status(404).json({...})
+```
+
+**`instanceof` 가 보는 것은 상태코드가 아니라 계보다.**
+
+```
+ResourceNotFoundError → Error                    ← 새 전역 필터가 잡는다
+NotFoundException     → HttpException → Error    ← 컨트롤러 필터가 잡는다
+BadRequestException   → HttpException → Error
+```
+
+`NotFoundException` **도 404 지만 새 필터에 안 걸린다** — 타입이 다르니까.
+반대로 `@Catch(Error)` 였다면 위 셋이 전부 걸렸다. `this.name = 'ResourceNotFoundError'`
+문자열은 이 대조에 **관여하지 않는다**(로그용). 프로토타입 체인만 본다.
+
+**컴파일러가 잡아주는 것과 안 잡아주는 것 — 플랜의 예측이 틀렸다**
+
+플랜은 service 반환 타입에서 `| undefined` 를 지우면 controller 의
+`result === undefined` 가 **컴파일 에러**가 될 거라 했다. 안 났다 (`pnpm build` rc=0).
+
+| 패턴 | `Cat` 으로 좁힌 뒤 |
+|---|---|
+| `result === undefined` | **통과** — 항상 false 인 죽은 코드가 될 뿐 |
+| 인자 개수 초과 (`('Cat','findOne')` → 1개짜리 생성자) | **에러** — 실제로 잡았다 |
+
+즉 TS 는 **구조(인자 개수·타입)는 검사하지만 값 비교의 무의미함은 안 잡는다.**
+*"타입을 좁히면 컴파일러가 지울 자리를 짚어준다"* 의 사각지대다.
+결과적으로 죽은 코드가 조용히 남을 수 있어 grep 으로 직접 확인해야 했다:
+
+```bash
+grep -c "result === undefined" src/cats/cats.controller.ts   # → 0
+grep -c "NotFoundException"    src/cats/cats.controller.ts   # → 0
+grep -c "NotFoundException\|HttpException" src/cats/cats.service.ts  # → 0
+```
+
+**옵션을 만들었더니 일관성이 깨졌다 — `message?` 제거**
+
+처음엔 `(resource, operation, message?)` 로 만들었다. 커스텀 메시지가 필요할 때를
+위한 선택 인자였는데, 실제로 쓰니 **`findOne` 만** 넘기게 됐다.
+
+```
+GET    /cats/999  →  "Cat with id 999 not found"
+PATCH  /cats/999  →  "Cat not found"      ← 같은 404 인데 형식이 다르다
+```
+
+옵션이 있으면 **일부만 쓰게 되고, 그게 곧 불일치다.** 제거하니 메시지가 정해지는
+자리가 예외 클래스 한 곳으로 모였다. id 추적은 응답의 `path` 가 한다.
+
+**`operation` 도 제거 — 아무도 읽지 않았다**
+
+"메서드별로 메시지가 갈릴 여지" 로 넣었으나 필터는 `exception.message` 만 읽고,
+응답 4필드에도 안 나가고, 메서드명은 **스택트레이스에 이미 있다.**
+남은 생성자는 인자 하나:
+
+```ts
+export class ResourceNotFoundError extends Error {
+    constructor(readonly resource: string) {
+        super(`${resource} not found`);
+        this.name = 'ResourceNotFoundError';
+    }
+}
+```
+
+> 둘을 뺀 잣대가 같지 않다는 점은 구분해 둘 값어치가 있다 —
+> `message?` 는 **실제로 불일치가 발생해서**, `operation` 은 **아직 안 쓰여서** 뺐다.
+
+**예외를 cats 가 아니라 common 에 둔 이유**
+
+"id 로 찾았는데 없다" 는 cats 고유 지식이 아니다. 리소스 이름은 **필드로 받으면 되는 것**
+이었다. 덕분에 `common/` 필터가 `cats/` 를 import 하는 **역방향 의존이 아예 안 생긴다.**
+
+포기한 것: `resource` 가 문자열이라 **오타를 컴파일러가 못 잡는다.**
+리소스 1개 + 필터에 분기 없음이라 지금은 수용.
+
+**전역 필터의 두 함정**
+
+- `main.ts` 에서 `new` 로 만들어 넘기므로 **DI 를 못 받는다.** 주입이 필요해지면
+  `APP_FILTER` 프로바이더로 등록 방식을 바꿔야 한다(그때 `@Injectable()` 필요)
+- `await app.listen()` **앞**에 둬야 한다 — 뒤면 조용히 무시된다
+  (7단계 `useGlobalPipes` 와 같은 함정)
+
+**스코프는 셋 — "전역" 은 `main.ts` 뿐이다**
+
+| 등록 위치 | 스코프 | 이 레포 |
+|---|---|---|
+| `main.ts` `useGlobalFilters()` | 앱 전체 | `ResourceNotFoundFilter` |
+| 클래스 위 `@UseFilters()` | 그 컨트롤러 | `HttpExceptionFilter` (`CatsController`) |
+| 메서드 위 `@UseFilters()` | 그 핸들러 | 없음 |
+
+`@UseFilters` 를 컨트롤러에 붙인 것은 전역이 아니다. 증거: `AppController` 에서 던진
+`HttpException` 은 그 필터를 **안 탄다** → Nest 기본 필터라 4필드 형식이 아니다.
+
+**남긴 중복 — 의도적**
+
+응답 4필드 조립이 두 필터에 중복돼 있다. 지금 형식을 손대면 이번 리팩터가
+"동작 불변" 임을 증명할 수 없다. 형식 통일은 Phase 1.5 의 별도 항목
+(`{data}` vs `{timestamp,…}`)에서 두 필터를 **함께** 고친다.
+
+**실측 (2026-09-22, 12건 전부 통과)**
+
+```
+404  GET/PATCH/DELETE /cats/999  {"timestamp":…,"statusCode":404,
+                                  "path":"/cats/999","message":"Cat not found"}
+200  GET/PATCH /cats/1 · GET /cats {"data":[…]}
+200  DELETE /cats/1 (admin) → 404 GET /cats/1    ← 진짜 상태 변화 후의 404
+400  /cats/abc · 빈 DTO POST      403  DELETE roles:user      401  키 없음
+```
+
+400·401·403 이 **404 로 안 뭉개진 것**이 이번 실측의 핵심이다 —
+`@Catch(ResourceNotFoundError)` 가 좁게 잡힌다는 증거.
+
+**되돌릴 조건**
+
+| 조건 | 그때 할 것 |
+|---|---|
+| 도메인 예외가 **2개째** 생김 (12단계 DB 의 409 등) | 공통 부모 `DomainError` 추가 — `@Catch(DomainError)` 하나로 묶기 위해 |
+| 필터 안에 `resource` 문자열 **분기**가 생김 | 타입으로 분리 (`CatNotFoundError` 등) |
+| 리소스가 **3개 이상** | 위와 같음 |
+| 메서드별로 메시지·상태가 갈려야 함 | `operation` 을 되살리거나 `code` 축으로 확장 |
+
+그 전까지는 현 설계(범용 예외 1개 + 필터 1개)가 맞다. 클래스를 미리 쪼개면
+**일하는 층 없이 계층만** 생긴다.
 
 ### Step 10 에서 익힌 것 (Phase 1.5 — DTO 중복)
 
