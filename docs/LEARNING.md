@@ -59,7 +59,7 @@
 | `getRequest()` 제네릭을 매번 손으로 | 커스텀 decorator (`@Req()` 래핑 등) |
 | Jest 가 ESM 충돌로 안 돎 | Phase 3 에서 저절로 풀릴 수도 |
 | ~~성공 `{data}` vs 에러 `{timestamp,…}` 로 응답 형식이 갈림 (9단계)~~ | ✅ **해결** — 성공 `{data}` / 에러 `{error:{code,message}}` 로 이원화 해소 (Step 14) |
-| 두 필터가 같은 봉투 조립 코드를 갖게 됨 (14단계) | **Step 15 후보** — 공용 함수로 추출. 지금 안 하는 이유는 무엇을 공유할지 모른 채 추상화하지 않기 위함 |
+| 두 필터가 같은 봉투 조립 코드를 갖게 됨 (14단계) | **Step 16** (Step 15 grilling 에서 분리 — 에러 스키마가 공유 대상을 먼저 드러낸다) — 공용 함수로 추출. 지금 안 하는 이유는 무엇을 공유할지 모른 채 추상화하지 않기 위함 |
 | 봉투가 Swagger 스키마와 어긋남 (14단계 이후 도입 시) | `@nestjs/swagger` 는 컨트롤러 반환 타입만 본다 — 전역 인터셉터가 감싸는 걸 모른다. `ApiOkResponse` + `getSchemaPath` 또는 커스텀 데코레이터 |
 | ~~에러 요청의 소요 시간이 안 찍힘 — `tap` 은 성공만 (9단계)~~ | ✅ **해결** — `finalize` 로 교체 (Step 13) |
 | 역할을 클라이언트 헤더로 받음 (8단계 stub) | 11단계 Configuration — 환경변수 + `timingSafeEqual` |
@@ -1203,6 +1203,9 @@ C 가 확장성은 낫지만 **지금 도입하면 비용만 낸다.** C 가 값
 - **DTO 는 class, 내부 타입은 interface** — 경계는 "외부에서 들어오는가".
   외부 입력은 런타임 검증이 필요 → decorator 부착 필요 → class 여야 한다.
   interface 에 decorator 는 **문법 에러**(TS1131), 사라지는 게 아니라 애초에 못 붙인다.
+  > **Step 15 에서 재정의** — 경계는 "외부 입력인가" 가 아니라 **"런타임 메타데이터가 필요한가"** 였다.
+  > Swagger 스키마(`getSchemaPath`·`@ApiProperty`)도 런타임 값이 필요해 응답 모델 `Cat` 이
+  > `entities/cat.entity.ts` class 로 넘어간다. `nest g resource` 기본 출력과 같은 형태.
 - **decorator 는 검사하지 않는다** — `@IsString()` 이 붙어도 그냥 대입된다(실측).
   `validateSync()` / `ValidationPipe` 가 **읽고 실행**해야 걸린다. 모든 decorator 가 동일 — 메모일 뿐.
 - **모듈은 캡슐** — `imports` 는 "연결", `exports` 는 "공개 품목". 양쪽 다 있어야 주입된다.
