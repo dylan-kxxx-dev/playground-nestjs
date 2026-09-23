@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { Cat } from './interfaces/cat.interface';
 import { CreateCatDto } from './dto/create-cat.dto';
 import { UpdateCatDto } from './dto/update-cat.dto';
 import { ResourceNotFoundError } from '../common/exceptions/resource-not-found.error';
+import { Cat } from './entities/cat.entity';
 
 @Injectable()
 export class CatsService {

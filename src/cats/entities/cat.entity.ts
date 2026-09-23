@@ -1,16 +1,15 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, IsString } from 'class-validator';
 
-export class CreateCatDto {
+export class Cat {
     @ApiProperty()
-    @IsString()
+    id: number;
+
+    @ApiProperty()
     name: string;
 
     @ApiProperty()
-    @IsNumber()
     age: number;
 
     @ApiProperty()
-    @IsString()
     breed: string;
 }
