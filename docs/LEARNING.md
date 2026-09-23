@@ -53,12 +53,14 @@
 | ~~404 `throw` 3줄이 3곳 반복~~ | ✅ **해결** — 도메인 예외 + 전역 필터 (Step 11) |
 | ~~DTO 두 개가 필드만 다르고 거의 동일~~ | ✅ **해결** — `PartialType` (Step 10) |
 | `class-validator` 에러 메시지가 영어 고정 | decorator 의 message 옵션 / i18n |
-| 응답 형식을 필터에서 손으로 조립 | interceptor(9)로 성공 응답까지 일관되게 |
+| ~~응답 형식을 필터에서 손으로 조립~~ | ✅ **해결** — 전역 인터셉터 + 전역 필터 2개로 봉투 통일 (Step 14) |
 | 서버 재시작마다 데이터 소멸 | Phase 2 Database — 지금은 정상 |
 | ~~`pnpm lint` 가 깨져 있음~~ | ⚠️ **오진이었다** — 스크립트는 `oxlint src/ test/` 로 올바르다. rtk 셸 훅이 명령을 가로채 eslint 로 돌리는 것이 원인(2026-09-22 실측). 레포에서 고칠 것 없음 → `pnpm exec oxlint src/ test/` 사용 |
 | `getRequest()` 제네릭을 매번 손으로 | 커스텀 decorator (`@Req()` 래핑 등) |
 | Jest 가 ESM 충돌로 안 돎 | Phase 3 에서 저절로 풀릴 수도 |
-| 성공 `{data}` vs 에러 `{timestamp,…}` 로 응답 형식이 갈림 (9단계) | filter 를 interceptor 형식에 맞추기 |
+| ~~성공 `{data}` vs 에러 `{timestamp,…}` 로 응답 형식이 갈림 (9단계)~~ | ✅ **해결** — 성공 `{data}` / 에러 `{error:{code,message}}` 로 이원화 해소 (Step 14) |
+| 두 필터가 같은 봉투 조립 코드를 갖게 됨 (14단계) | **Step 15 후보** — 공용 함수로 추출. 지금 안 하는 이유는 무엇을 공유할지 모른 채 추상화하지 않기 위함 |
+| 봉투가 Swagger 스키마와 어긋남 (14단계 이후 도입 시) | `@nestjs/swagger` 는 컨트롤러 반환 타입만 본다 — 전역 인터셉터가 감싸는 걸 모른다. `ApiOkResponse` + `getSchemaPath` 또는 커스텀 데코레이터 |
 | ~~에러 요청의 소요 시간이 안 찍힘 — `tap` 은 성공만 (9단계)~~ | ✅ **해결** — `finalize` 로 교체 (Step 13) |
 | 역할을 클라이언트 헤더로 받음 (8단계 stub) | 11단계 Configuration — 환경변수 + `timingSafeEqual` |
 | `{"age":null}` 이 200 통과 — `IsOptional` 은 `null` 도 skip (10단계) | `PartialType(..., { skipNullProperties: false })` / service 필터를 `null` 까지 |
@@ -110,6 +112,138 @@ Phase 1 완료 후 진행. CommonJS로 배운 것을 ESM으로 옮기며 모듈 
 | 11 | Phase 1.5 — 404 중복 제거 (도메인 예외 + 필터) | 완료 | `1cdfe76` |
 | 12 | Phase 1.5 — ParseIntPipe 반복 제거 (전역 transform) | **기각** — 실측으로 부적합 확인 | |
 | 13 | Phase 1.5 — 에러 요청 소요시간 측정 (`tap`→`finalize`) | 완료 | `bed82f2` |
+| 14 | Phase 1.5 — 응답 형식 이원화 해소 (봉투 통일) | 완료 | `82fa9b8` `9d12c29` `e79fbc4` `b1d6aee` |
+
+### Step 14 에서 익힌 것 (Phase 1.5 — 응답 형식 이원화)
+
+응답이 **네 갈래**였다. 성공끼리도 갈렸고, 성공과 에러는 겹치는 필드가 하나도 없었다.
+
+```
+GET /cats       {"data":[…]}                                TransformInterceptor (findAll 에만)
+GET /cats/1     {"id":1,…}                                   raw
+에러 (cats)     {"timestamp","statusCode","path","message"}  필터 2개가 각각 조립
+에러 (그 밖)    {"message","error","statusCode"}             Nest 기본 필터
+```
+
+네 번째가 있다는 걸 작업 중에 발견했다. `HttpExceptionFilter` 가 `@UseFilters` 로
+**`CatsController` 한정**이었기 때문에, 컨트롤러 밖에서 난 예외는 우리 필터에 닿지도 않았다.
+`@UseFilters` 를 컨트롤러에 붙이면 **스코프가 좁다는 사실이 이름에 안 드러난다** —
+`HttpExceptionFilter` 라는 범용적인 이름이 스코프를 거짓말하고 있었다.
+
+**결과 — 두 형태로 통일**
+
+```
+성공  {"data": ...}
+에러  {"error": {"code": "NOT_FOUND", "message": ["Cat not found"]}}
+```
+
+#### 판정 필드를 바디에 두지 않기로 한 이유
+
+후보 중에 `{"success": true|false, …}` 가 있었다. 기각한 이유는 **판정자가 둘이 되기 때문**이다.
+
+클라이언트가 성패를 가리는 조건문은 봉투와 **무관하게 이미 있다** — HTTP 상태코드에서
+(`res.ok`, axios 의 `catch`). 여기에 `success` 를 더하면 조건문이 *하나 늘어나는* 게 아니라
+**같은 사실이 두 군데 적히는** 것이다. 두 값이 적힌 곳이 둘이면 언젠가 어긋난다 —
+`success:true` 인데 상태 500 인 응답이 나올 수 있는 구조를 만들지 않는 편이 낫다.
+
+같은 이유로 `timestamp`·`path`·`statusCode` 도 뺐다. 각각 `Date` 헤더 · 요청 URL ·
+상태줄에 이미 있다. 에러 로그에는 값어치가 있지만 그건 **서버가 남길 것**이지
+응답 바디에 실어 보낼 것이 아니다.
+
+> 대신 **상태코드가 정확해야 한다는 제약**이 생긴다. 바디에 판정 정보가 없으니
+> 상태줄이 유일한 판정자다. 검증에서 `200/200/404/400/200/404` 를 따로 확인한 이유가 이것.
+
+#### `HttpStatus` 는 숫자 enum 이라 역방향 조회가 된다
+
+`code` 를 얻으려고 매핑 테이블을 만들 뻔했는데 필요 없었다. TS 숫자 enum 은 양방향이다:
+
+```ts
+HttpStatus.NOT_FOUND  // 404      이름 → 값
+HttpStatus[404]       // 'NOT_FOUND'   값 → 이름  ← 이쪽이 공짜로 따라온다
+```
+
+**실측** (2026-09-23):
+
+| 입력 | 결과 |
+|---|---|
+| `HttpStatus[404]` | `'NOT_FOUND'` |
+| `HttpStatus[400]` | `'BAD_REQUEST'` |
+| `HttpStatus[418]` | `'I_AM_A_TEAPOT'` |
+| `HttpStatus[599]` | **`undefined`** |
+
+마지막 줄이 함정이다. `HttpException` 은 **임의 상태코드를 담을 수 있으므로** enum 에 없는
+값이 올 수 있고, `undefined` 를 그대로 넣으면 `JSON.stringify` 가 **그 키를 통째로 삭제**한다:
+
+```
+{"error":{"message":[…]}}    ← code 가 사라진 응답
+```
+
+클라이언트가 `error.code` 를 항상 있다고 가정하면 여기서 깨진다. 값이 `null` 로라도 남으면
+알아챌 텐데 **키 자체가 없어져서** 조용하다. `|| 'UNKNOWN_ERROR'` 폴백을 넣은 이유다.
+
+#### `ValidationPipe` 는 실패를 전부 모아서 던진다
+
+`message` 타입을 `string` 하나로 줄일 수 있을까 싶었는데, 실측이 답을 줬다:
+
+```
+POST /cats {}  →  ["name must be a string",
+                   "age must be a number conforming to the specified constraints",
+                   "breed must be a string"]
+GET /cats/abc  →  "Validation failed (numeric string is expected)"
+```
+
+**첫 실패에서 멈추지 않는다.** DTO 필드가 3개면 3개가 다 온다. 반면 `ParseIntPipe` 와 404 는
+문자열 하나다 — **같은 400 안에서도 타입이 갈린다.**
+
+`join(', ')` 으로 문자열화하면 세 줄이 한 덩어리가 돼 **폼 필드별 에러 표시가 불가능**해진다.
+그래서 반대로 갔다 — **항상 배열**. 단일 메시지도 `["Cat not found"]` 로 감싼다.
+클라이언트가 `Array.isArray` 분기 없이 `.map()` 하나로 끝낼 수 있다.
+
+> 이것도 판정 필드와 같은 축이다. 서버에서 한 번 감싸면 끝날 일을, 안 감싸면
+> **에러를 표시하는 모든 자리에 분기가 복제된다.**
+
+#### 타입이 불가능하다고 분기가 사라지진 않는다
+
+`ResourceNotFoundFilter` 에 `Array.isArray(exception.message) ? … : […]` 를 넣었다가 지웠다.
+`ResourceNotFoundError` 는 `Error` 상속이라 **`message` 가 `string` 고정** — 배열이 될 수 없다.
+항상 false 로 가는 죽은 분기였고, TS 는 이걸 에러로 잡지 않는다.
+
+Step 11 의 *"TS 는 `Cat === undefined` 비교를 에러로 안 잡는다"* 와 같은 종류다.
+**타입상 불가능한 것과 컴파일러가 막아주는 것은 다르다.**
+
+이 분기가 따라온 경로도 기록해둔다 — 바로 앞 `HttpExceptionFilter` 에서는 `Array.isArray` 가
+**정답**이었다(`getResponse()` 가 실제로 `string | object` 두 모양). 옆 파일을 참고해 쓰면
+그 파일의 전제까지 같이 딸려온다.
+
+#### 인터셉터는 에러를 이중 포장하지 않는다
+
+전역 인터셉터는 **에러 요청도 통과한다** — Step 13 에서 `/cats/abc` 400 에 `Before` 가 찍힌
+것이 그 증거다(인터셉터가 파이프보다 바깥). 그러면 `{"data":{"error":…}}` 로 두 번 감싸지지
+않을까? **안 된다** — `map()` 은 **성공 채널만** 타기 때문이다. 에러는 error 채널로 흘러
+`map` 을 건너뛰고 필터로 간다.
+
+추론으로는 알 수 있지만 실측으로 확인했다:
+
+```
+GET /cats/999  →  {"error":{"code":"NOT_FOUND","message":["Cat not found"]}}
+                   ← {"data":{…}} 로 감싸이지 않음
+```
+
+`tap` 이 성공만 보던 것(Step 13)과 **같은 이유, 반대 방향의 결과**다. 그때는 손실이었고
+(에러 소요시간을 놓쳤다) 이번엔 이득이다(에러가 안 감싸진다).
+
+#### 빌드도 린트도 안 잡는 실수가 있다
+
+작업 중 `response.json()` 을 **두 번 호출**한 상태가 있었다. 옛 코드를 지우지 않고 새 코드를
+아래 추가한 것이다. 문법적으로 정상이라 **빌드·oxlint·prettier 전부 통과했다.**
+
+실제로는 첫 번째 `json()` 이 나가고 두 번째는 `ERR_HTTP_HEADERS_SENT` 를 던진다 —
+클라이언트는 옛 형태를 받고 서버 로그에만 에러가 쌓인다.
+
+**이 레포에서 curl 실측이 유일한 판정자인 이유가 이것이다.** Jest 가 안 도는 건 불편이지만,
+설령 돌았어도 응답 *형태*는 타입 검사의 사정권 밖이다.
+
+---
 
 ### Step 13 에서 익힌 것 (Phase 1.5 — 에러 요청 소요시간)
 

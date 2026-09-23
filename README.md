@@ -27,7 +27,7 @@ NestJS 학습·실험용 개인 플레이그라운드.
 │    (핸들러 前)     │  "Before..." 출력                │    (핸들러 後)     │
 └────────┬───────────┘                                  │ "After... 12ms"    │
          ▼                                              │ TransformInterceptor│
-┌────────────────────┐                                  │ → { data: ... }    │
+┌────────────────────┐                                  │ (전역) → {data:...} │
 │ 4. Pipe            │  ParseIntPipe  '1' → 1           └────────────────────┘
 │    변환·검증       │  ValidationPipe (전역) DTO 검사             ▲
 └────────┬───────────┘                              ──400──────────┤
@@ -80,8 +80,8 @@ Step 11 에서 만든 구조. **`throw` 한 순간 함수가 탈출하고, 나�
 │ 3. Nest — 등록된 필터를 순회하며 instanceof 로 고른다            │
 │                                                                  │
 │    좁은 스코프부터:  핸들러 @UseFilters                          │
-│                   →  컨트롤러 @UseFilters   ← HttpExceptionFilter│
-│                   →  전역 useGlobalFilters  ← ResourceNotFound…  │
+│                   →  컨트롤러 @UseFilters                        │
+│                   →  전역 useGlobalFilters  ← 이 레포는 둘 다 여기│
 │                                                                  │
 │    exception instanceof <@Catch 에 적힌 타입> ?                  │
 └──────────────────────────────────┬───────────────────────────────┘
@@ -93,8 +93,7 @@ Step 11 에서 만든 구조. **`throw` 한 순간 함수가 탈출하고, 나�
 │                    ↑ 404 라는 숫자가 나오는 유일한 자리          │
 └──────────────────────────────────┬───────────────────────────────┘
                                    ▼
-        {"timestamp":…,"statusCode":404,"path":"/cats/999",
-         "message":"Cat not found"}
+        {"error":{"code":"NOT_FOUND","message":["Cat not found"]}}
 ```
 
 ### 왜 이렇게 나눴나
@@ -135,9 +134,16 @@ main.ts    app.useGlobalFilters(new F())   ──→ 앱 전체
 | 필터 | 등록 위치 | 스코프 |
 |---|---|---|
 | `ResourceNotFoundFilter` | `main.ts` | **전역** |
-| `HttpExceptionFilter` | `cats.controller.ts` 클래스 위 | `CatsController` 한정 |
+| `HttpExceptionFilter` | `main.ts` | **전역** (Step 14 에서 이동) |
 
-`AppController` 에서 `HttpException` 을 던지면 `HttpExceptionFilter` 를 **안 탄다** → Nest 기본 필터라 4필드 형식이 아니다. 이것이 "컨트롤러 스코프" 의 증거다.
+**전에는 `HttpExceptionFilter` 가 `cats.controller.ts` 의 `@UseFilters` 로 `CatsController` 한정이었다.** 그래서 `AppController` 나 라우트 자체가 없는 요청에서 난 예외는 이 필터를 **안 타고** Nest 기본 필터로 나갔다 — 응답 형식이 하나 더 있었던 것이다:
+
+```
+전:  GET /nope → {"message":"Cannot GET /nope","error":"Not Found","statusCode":404}
+후:  GET /nope → {"error":{"code":"NOT_FOUND","message":["Cannot GET /nope"]}}
+```
+
+이름이 `HttpExceptionFilter` 로 범용적인데 스코프는 컨트롤러 하나였다 — **이름이 스코프를 거짓말하고 있었다.**
 
 > 함정 둘: 전역 필터는 `new` 로 만들어 넘기므로 **DI 를 못 받는다.** 그리고 `await app.listen()` **앞**에 등록해야 한다 — 뒤면 조용히 무시된다.
 
@@ -145,13 +151,28 @@ main.ts    app.useGlobalFilters(new F())   ──→ 앱 전체
 
 ## 현재 응답 형식
 
-| 경로 | 형식 | 만드는 곳 |
-|---|---|---|
-| `GET /cats` | `{"data":[…]}` | `TransformInterceptor` (이 핸들러에만) |
-| `GET /cats/1` | `{"id":1,…}` | 없음 — 핸들러 반환값 그대로 |
-| 에러 전부 | `{"timestamp","statusCode","path","message"}` | 두 필터 각각 |
+**모든 응답이 두 형태 중 하나다** (Step 14 에서 통일).
 
-성공과 에러의 형식이 갈려 있다. **Phase 1.5 의 미해결 항목** — 두 필터를 함께 고쳐야 해서 미뤘다.
+| | 형식 | 만드는 곳 |
+|---|---|---|
+| 성공 전부 | `{"data": ...}` | `TransformInterceptor` (전역) |
+| 에러 전부 | `{"error": {"code": "...", "message": [...]}}` | 두 필터 (둘 다 전역) |
+
+```jsonc
+GET /cats/1     {"data":{"id":1,"name":"나비","age":3,"breed":"코숏"}}
+GET /           {"data":"Hello World!"}              // 원시값도 감싼다
+GET /cats/999   {"error":{"code":"NOT_FOUND","message":["Cat not found"]}}
+POST /cats {}   {"error":{"code":"BAD_REQUEST","message":["name must be a string", …]}}
+```
+
+**규칙 셋:**
+
+- **성패 판정은 HTTP 상태코드 단독.** 바디에 `success` 같은 판정 필드를 두지 않는다 —
+  같은 사실이 두 군데 있으면 어긋난다. 대신 상태코드가 정확해야 한다
+- **`message` 는 항상 배열.** `ValidationPipe` 가 실패한 제약을 전부 모아 던지기 때문에
+  단일 메시지도 감싸서 타입을 하나로 고정한다
+- **`code` 는 `HttpStatus` 역방향 조회.** `HttpStatus[404] === 'NOT_FOUND'`.
+  enum 에 없는 코드는 `undefined` 라 `'UNKNOWN_ERROR'` 로 폴백한다
 
 ---
 
@@ -199,7 +220,7 @@ src/
 │   ├── exceptions/            # ResourceNotFoundError — HTTP 를 모른다
 │   ├── filters/               # 예외 → HTTP 응답 변환
 │   ├── guards/                # AuthGuard(인증) / RolesGuard(인가)
-│   ├── interceptors/          # Logging(전역) / Transform(핸들러별)
+│   ├── interceptors/          # Logging / Transform (둘 다 전역)
 │   └── middleware/            # LoggerMiddleware
 ├── types/express.d.ts         # req.user — declaration merging
 ├── app.module.ts              # configure() 로 middleware 등록
