@@ -31,7 +31,16 @@ src/
 │   ├── cats.module.ts     # exports: [CatsService]
 │   ├── cats.controller.ts
 │   └── cats.service.ts    # 메모리 배열 저장소 (DB 없음)
-├── common/middleware/     # 기능에 속하지 않는 공통 코드
+├── common/                # 기능에 속하지 않는 공통 코드
+│   ├── middleware/        # LoggerMiddleware
+│   ├── guards/            # AuthGuard(신원, 학습용 stub) → RolesGuard(판정)
+│   ├── decorators/        # @Roles
+│   ├── interceptors/      # Logging, Transform(성공 → {data} 봉투)
+│   ├── filters/           # HttpException, ResourceNotFound(에러 → {error} 봉투)
+│   ├── exceptions/        # 도메인 예외 (HTTP 모름 — 필터가 번역)
+│   └── types/             # AuthUser
+├── types/express.d.ts     # req.user declaration merging
+├── main.ts                # 인터셉터·파이프·필터 전부 여기서 전역 등록
 └── app.module.ts          # configure() 로 middleware 등록
 ```
 
@@ -50,9 +59,11 @@ src/
 
 - **진행 상황·미결 사항은 `docs/LEARNING.md` 가 SSOT.** 세션 시작 시 먼저 읽는다.
 - 개인 실험 레포라 실패 비용이 0에 가깝다 — 시행착오에 관대하게.
-- 미결로 남겨둔 것들(404 미반환, `/cats/abc` 통과, 타입 검증 없음)은
-  **의도적으로 남긴 것**이다. Exception filters(6)·Pipes(7) 단계에서 해결한다.
-  먼저 고치면 그 단계의 학습 동기가 사라진다.
+- 미결로 남겨둔 것(`LEARNING.md` 의 Phase 1.5 표·미결 사항)은 **의도적으로 남긴 것**이다.
+  해당 단계보다 먼저 고치면 그 단계의 학습 동기가 사라진다.
+  예: 역할을 헤더로 받는 `AuthGuard` stub → 11단계 Configuration, `{"age":null}` 통과 → Phase 1.5.
+- **Jest 는 전부 실패한다**(`@nestjs/testing` ESM 전용 ↔ CommonJS). 검증은 curl 실측으로 한다.
+- `pnpm lint` 는 rtk 셸 훅이 eslint 로 바꿔 실행해 실패한다 — `pnpm exec oxlint src/ test/` 사용.
 
 ---
 
